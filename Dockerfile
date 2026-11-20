@@ -7,6 +7,8 @@ RUN git init -q /src && git -C /src fetch --depth=1 --no-tags https://github.com
 FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90
 ENV PYTHONDONTWRITEBYTECODE=1
 COPY --from=source /src/sqlglot /base/sqlglot
+COPY --from=source /src/tests /base/tests
+RUN python -m compileall -q /base/sqlglot
 WORKDIR /app
-COPY selector.py impact.py base.z ./
+COPY selector.py impact.py refine.py import_check.py base.z details.z ./
 CMD ["python", "/app/selector.py"]

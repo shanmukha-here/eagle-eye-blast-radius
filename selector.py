@@ -2,11 +2,13 @@
 import json
 import math
 import sys
+import time
 import zlib
 from functools import lru_cache
 from pathlib import Path
 
 from impact import Impact
+from refine import Details
 
 
 class Scheduler:
@@ -57,11 +59,13 @@ class Scheduler:
 def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_name("base.z")):
     tests = json.loads((data / "tests.json").read_bytes())["tests"]
     profile = json.loads(zlib.decompress(map_path.read_bytes()))
-    impact = Impact(base, profile)
+    data_map = json.loads(zlib.decompress(map_path.with_name("details.z").read_bytes()))
+    impact = Impact(base, profile, Details(data_map, profile["ids"], base))
     scheduler = Scheduler(tests, profile["ids"])
+    deadline = time.monotonic() + 145
     for path in sorted((data / "commits").glob("*.patch")):
         mask = impact.full
-        if path.stat().st_size <= 1_000_000:
+        if time.monotonic() < deadline and path.stat().st_size <= 1_000_000:
             try:
                 mask = impact.select(path.read_text("utf-8"))
             except UnicodeError:
