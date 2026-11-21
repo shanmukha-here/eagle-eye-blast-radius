@@ -15,10 +15,9 @@ class PatchedModule(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
     def find_spec(self, fullname, path, target=None):
         if fullname == self.module:
-            options = {}
-            if Path(self.filename).name == "__init__.py":
-                options["submodule_search_locations"] = [str(Path(self.filename).parent)]
-            return importlib.util.spec_from_file_location(fullname, self.filename, loader=self, **options)
+            return importlib.util.spec_from_file_location(
+                fullname, self.filename, loader=self
+            )
         return None
 
     def create_module(self, spec):

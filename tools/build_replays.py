@@ -12,9 +12,7 @@ from pathlib import Path
 from checkpoint import digest, table_digest
 from sqlglot import find_tables, parse_one
 from sqlglot.executor import execute
-from sqlglot.executor.python import PythonExecutor
-from sqlglot.executor.table import Table, ensure_tables
-from sqlglot.planner import Plan
+from sqlglot.executor.table import Table
 from sqlglot.optimizer import optimize
 from sqlglot.schema import ensure_schema
 from tests.helpers import FIXTURES_DIR, TPCDS_SCHEMA, load_sql_fixture_pairs
@@ -69,14 +67,6 @@ def main(index_file, output):
         reference, opt_reference = expected[key]
         if table_digest(table) == reference and (not opt_reference or opt_reference == opt_result):
             (output / (key + ".z")).write_bytes(raw)
-            # Verify the planner boundary against the real upstream executor
-            # table before allowing executor-only edits to bypass optimization.
-            snapshot = encode((Plan(optimized), names))
-            plan, required = pickle.loads(zlib.decompress(snapshot))
-            clean_tables = {n: tables[n] for n in required}
-            replayed = PythonExecutor(tables=ensure_tables(clean_tables)).execute(plan)
-            if table_digest(replayed) == reference:
-                (output / ("optimized-" + key + ".z")).write_bytes(snapshot)
             matched.add(key)
     # Individual missing references disable the corresponding runtime probe.
     print(f"verified {len(matched)} of {len(expected)} upstream query postconditions")

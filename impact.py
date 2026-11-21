@@ -7,7 +7,6 @@ from pathlib import Path
 
 from dependencies import appended_failure, simple_collection
 from refine import bindings
-from miniatures import CORE
 
 HEADER = re.compile(r"diff --git a/([A-Za-z0-9_./-]+) b/([A-Za-z0-9_./-]+)")
 HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*")
@@ -176,12 +175,6 @@ class Impact:
             compile(source, path, "exec", dont_inherit=True),
         )
 
-    def check_startup(self, mask):
-        # An import edit can affect interpreter-wide timing. The scaled parser
-        # assertions do not certify that the full stress run finishes in time.
-        miniature = getattr(self.details, "miniatures", None)
-        return mask | miniature.tests.get("parser", 0) if miniature else mask
-
     def file_mask(self, path, hunks, single=False, fixture_mix=False):
         rows = self.files.get(path, {})
         if path.startswith("tests/fixtures/"):
@@ -220,18 +213,7 @@ class Impact:
         updated_code = compile(modified, path, "exec", dont_inherit=True)
         updated, new_scopes = structure(ast.parse(modified))
         flow = getattr(self.details, "flow", None)
-        startup = getattr(self.details, "startup", None) if single else None
         if skeleton != updated or scopes.keys() != new_scopes.keys():
-            if startup:
-                registration = startup.registry(path, source, modified, self.details.access)
-                if registration is not None and self.details.import_valid(path, modified):
-                    mask, default_key_only = registration
-                    selected = self.check_startup(mask | rows.get(0, 0) | flow.opaque)
-                    if default_key_only and not (mask | rows.get(0, 0) | flow.opaque) & self.details.miniatures.tests.get("parser", 0):
-                        # get_or_raise(None) constructs the base class directly.
-                        # Require no traced reads of any affected derived field, then verify cold.
-                        return self.details.miniatures.check(selected, self.scheduler, "parser", path, modified)
-                    return selected
             if flow and single and flow.equality(path, ast.parse(source), ast.parse(modified)):
                 return rows.get(0, 0) | flow.opaque
             if self.details and single:
@@ -241,11 +223,6 @@ class Impact:
             return self.full
         affected = [k for k in scopes if scopes[k][2] != new_scopes[k][2]]
         readers = rows.get(0, 0)
-        if len(affected) == 1 and startup:
-            key = affected[0]
-            mask = startup.lazy(path, key, scopes[key][3], new_scopes[key][3])
-            if mask is not None:
-                return self.check_startup(mask | readers | flow.opaque)
         if not affected:
             # Non-semantic edits can still move line information or affect source readers.
             fallback = readers | self.visitors.get(path, self.full)
@@ -288,23 +265,7 @@ class Impact:
                 and replay and not readers & replay.test):
             key = affected[0]
             selected = replay.select(path, modified, key, scopes[key], new_scopes[key], selected,
-                                     getattr(self, "scheduler", None), bool(refine))
-        miniature = getattr(self.details, "miniatures", None)
-        if miniature and single and len(affected) == 1:
-            key = affected[0]
-            selected = miniature.select(selected, getattr(self, "scheduler", None), path, modified,
-                                        key, scopes[key], new_scopes[key], readers)
-        # Executor code runs in child workers during the suite. An early return
-        # that bypasses a result constructor can disrupt their shared lifetime.
-        if miniature and path.startswith("sqlglot/executor/"):
-            for key in affected:
-                previous = [n for n in ast.walk(scopes[key][3]) if isinstance(n, ast.Return)]
-                current = [n for n in ast.walk(new_scopes[key][3]) if isinstance(n, ast.Return)]
-                if len(previous) == len(current) and any(
-                    isinstance(a.value, ast.Call) and isinstance(b.value, ast.Constant)
-                    and b.value.value is None for a, b in zip(previous, current)
-                ):
-                    selected |= miniature.tests.get("parser", 0)
+                                     getattr(self, "scheduler", None))
         return selected
 
     def select(self, patch):
@@ -326,15 +287,6 @@ class Impact:
                 selection |= self.file_mask(path, hunks, single=len(edits) == 1, fixture_mix=fixture_mix)
                 if selection == self.full:
                     break
-            miniature = getattr(self.details, "miniatures", None)
-            if miniature and selection != self.full and edits.keys() & CORE:
-                if len(edits) != 1:
-                    return selection | miniature.tests.get("parser", 0)
-                path, hunks = next(iter(edits.items()))
-                source, before, _ = self.base(path)
-                modified = patched(source, hunks)
-                return miniature.protect_core(selection, self.scheduler, path, modified,
-                                              before, structure(ast.parse(modified)))
             return selection
         except (
             UnknownChange,

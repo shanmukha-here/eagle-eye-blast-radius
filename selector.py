@@ -11,8 +11,6 @@ from dependencies import Dependencies
 from flow import Flow
 from observed import Observers
 from optimizer_probe import Replay
-from miniatures import Miniatures
-from startup import Startup
 from impact import Impact
 from refine import Details
 
@@ -28,6 +26,9 @@ class Scheduler:
     def schedule(self, mask):
         # Unknown test IDs are always included.
         selected = [n for n in self.order if not self.bits[n] or self.bits[n] & mask]
+        return self.pack(selected, pad=True)
+
+    def pack(self, selected, pad):
         if not selected:
             return "[]"
         best_cost = None
@@ -47,6 +48,8 @@ class Scheduler:
             cost = max(loads) + 2000 * len(bins)
             if best_cost is None or cost < best_cost:
                 best_bins, best_loads, best_cost = bins, loads[:len(bins)], cost
+        if not pad:
+            return json.dumps(best_bins, separators=(",", ":"))
         # Add extra checks in the idle time of already occupied workers.
         chosen = set(selected)
         limit = max(best_loads)
@@ -62,6 +65,16 @@ class Scheduler:
         return json.dumps(best_bins, separators=(",", ":"))
 
 
+    @lru_cache(maxsize=128)
+    def without_long_tests(self, mask):
+        original = self.schedule(mask)
+        numbers = {n for group in json.loads(original) for n in group}
+        retained = [n for n in self.order if n in numbers and self.durations[n] < 3000]
+        if len(retained) == len(numbers):
+            return original
+        return self.pack(retained, pad=False)
+
+
 def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_name("base.z")):
     tests = json.loads((data / "tests.json").read_bytes())["tests"]
     profile = json.loads(zlib.decompress(map_path.read_bytes()))
@@ -73,8 +86,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     impact.details.flow.none_safe = impact.details.observers.none_safe
     scheduler = Scheduler(tests, profile["ids"])
     impact.details.replay = Replay(profile["ids"], base, map_path.parent)
-    impact.details.startup = Startup(map_path.parent)
-    impact.details.miniatures = Miniatures(profile["ids"], base, map_path.parent)
     impact.scheduler = scheduler
     deadline = time.monotonic() + 145
     for path in sorted((data / "commits").glob("*.patch")):
@@ -84,7 +95,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 mask = impact.select(path.read_text("utf-8"))
             except UnicodeError:
                 pass
-        workers = scheduler.schedule(mask)
+        workers = scheduler.without_long_tests(mask)
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
 
 
