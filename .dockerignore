@@ -85,3 +85,5 @@ tools/*
 !recovery.py
 !tools/build_long_cases.py
 !tools/build_import_closure.py
+!cold_import.py
+!tools/build_cold_import_index.py
