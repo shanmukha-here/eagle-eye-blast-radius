@@ -24,6 +24,20 @@ def identity_decorator(node):
             and node.body.id == positional[0].arg)
 
 
+def identity_layout(before, after):
+    """Check an edit confined to syntactically inert lambda decorators."""
+    class StripIdentity(ast.NodeTransformer):
+        def visit_ClassDef(self, node):
+            node.decorator_list = [value for value in node.decorator_list if not identity_decorator(value)]
+            return self.generic_visit(node)
+
+        visit_FunctionDef = visit_ClassDef
+        visit_AsyncFunctionDef = visit_ClassDef
+
+    strip = StripIdentity()
+    return ast.dump(strip.visit(ast.parse(before))) == ast.dump(strip.visit(ast.parse(after)))
+
+
 class Normalize(ast.NodeTransformer):
     def __init__(self, package, identifiers, annotations):
         self.package = package

@@ -24,9 +24,14 @@ def main(base, directory):
                        "find_config_files", "parse_config_files"}
     discovery = set()
     introspection = {}
+    source_introspection = {}
     metadata_reads = {"__annotations__", "__doc__", "co_consts", "get_annotations",
                       "get_type_hints", "getdoc", "getcomments", "getsource",
                       "signature", "DocTestSuite", "DocTestFinder"}
+    source_reads = {"co_consts", "co_firstlineno", "co_linetable", "co_lnotab", "co_lines", "co_positions",
+                    "findsource", "getcomments", "getframeinfo", "getsource", "getsourcelines", "linecache",
+                    "settrace", "f_lineno", "f_trace", "tb_lineno", "extract_stack", "format_stack",
+                    "get_instructions", "disassemble"}
     for source_dir in ("sqlglot", "tests"):
         for source in sorted((base / source_dir).rglob("*.py")):
             name = source.relative_to(base).as_posix()
@@ -50,6 +55,13 @@ def main(base, directory):
             )})
             if lines:
                 introspection[name] = lines
+            physical = sorted({n.lineno for n in nodes if hasattr(n, "lineno") and (
+                isinstance(n, ast.Name) and n.id in source_reads
+                or isinstance(n, ast.Attribute) and n.attr in source_reads
+                or isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in source_reads
+            )})
+            if physical:
+                source_introspection[name] = physical
             for path, readers in index.items():
                 basename = path.rpartition("/")[2]
                 if any(basename in value for value in strings) or (
@@ -67,18 +79,21 @@ def main(base, directory):
                      | impact.visitors.get(path, 0))
         return mask
 
-    observed = 0
-    for path, numbers in introspection.items():
-        if path not in details.lines:
-            observed |= readers([path])
-            continue
-        observed |= impact.files.get(path, {}).get(0, 0)
-        lines = details.lines[path]
-        for number in numbers:
-            observed |= lines.get(number, 0)
+    def observations(locations):
+        observed = 0
+        for path, numbers in locations.items():
+            if path not in details.lines:
+                observed |= readers([path])
+                continue
+            observed |= impact.files.get(path, {}).get(0, 0)
+            lines = details.lines[path]
+            for number in numbers:
+                observed |= lines.get(number, 0)
+        return observed
     records = {"file:" + p: ((None, readers(paths)),) for p, paths in index.items()}
     records["discover"] = ((None, readers(discovery)),)
-    records["introspect"] = ((None, observed),)
+    records["introspect"] = ((None, observations(introspection)),)
+    records["source_layout"] = ((None, observations(source_introspection)),)
     build(directory / "project_readers.index", records)
 
 

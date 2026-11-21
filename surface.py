@@ -7,7 +7,7 @@ import re
 import sys
 import tomllib
 
-from definition_metadata import equivalent
+from definition_metadata import equivalent, identity_layout
 from dependencies import name_bits
 from impact import UnknownChange, patched, split_diff, syntax
 from observation_file import ObservationFile
@@ -56,6 +56,7 @@ class Surface:
         self.index = ObservationFile(filename) if filename.is_file() else None
         self.discovery = self.mask("discover") or 0
         self.introspection = self.mask("introspect") or 0
+        self.source_layout = self.mask("source_layout")
 
     def mask(self, name):
         rows = self.index.get(name) if self.index is not None else ()
@@ -138,7 +139,8 @@ class Surface:
             before, after = (compile(content, path, "exec", flags=ast.PyCF_ONLY_AST, dont_inherit=True)
                              for content in (source, modified))
             if ast.dump(before) == ast.dump(after):
-                return file_effects | opaque | details.positions | self.introspection
+                layout = self.source_layout if self.source_layout is not None else self.introspection
+                return file_effects | opaque | details.positions | layout
         except (UnknownChange, OSError, UnicodeError, ValueError, SyntaxError, RecursionError, LookupError):
             pass
         return None
@@ -161,6 +163,10 @@ class Surface:
         ):
             return None
         access = self.impact.details.access
+        if (self.source_layout is not None and ("@(" in original or "@(" in modified)
+                and identity_layout(original, modified)):
+            return (self.impact.details.positions | self.impact.details.flow.opaque |
+                    self.impact.files.get(path, {}).get(0, 0) | self.references.get(path, 0) | self.source_layout)
         if not equivalent(path, original, modified, old, new, access.names if access else b""):
             return None
         return (self.impact.details.positions | self.impact.details.flow.opaque |
