@@ -252,14 +252,15 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             # The import closure widens to cover definition side effects. A
             # long test introduced by that closure still needs a trace route
             # through at least one changed module.
-            introduced = (extra - selected) & long_cases.tests.keys()
-            retained = long_cases.recovery_scope(text, introduced) if introduced else introduced
-            skipped = introduced - retained
+            relevant = (extra if replace else selected | extra) & long_cases.tests.keys()
+            retained = long_cases.recovery_scope(text, relevant) if relevant else relevant
+            skipped = relevant - retained
             if skipped:
                 precision.stats["recovery_long_unobserved"] = sorted(skipped)
             selected = (extra if replace else selected | extra) - skipped
             plan = scheduler.repack(selected, plan)
-            plan = long_cases.recovery_replay(text, plan, base.resolve(), PatchWorkspace, budget.cap, retained)
+            plan = long_cases.recovery_replay(text, plan, base.resolve(), PatchWorkspace, budget.cap,
+                                             retained & (extra - selected))
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace
         if text:

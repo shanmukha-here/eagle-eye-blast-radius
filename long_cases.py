@@ -219,8 +219,7 @@ class LongCases:
             if len(edits) != 1:
                 return None
             path, = edits
-            masks = [self.index.mask(f"{m}:{path}") for m in range(len(METHODS))]
-            return None if any(mask & 1 for mask in masks) else masks
+            return [self.index.mask(f"{m}:{path}") for m in range(len(METHODS))]
         if len(changes) != 1:
             # Independent sub-case traces do not capture all interactions
             # between edits in separate modules and the suite's shared state.
@@ -236,7 +235,7 @@ class LongCases:
                     for line in range(start, end + 1):
                         for method in range(len(METHODS)):
                             masks[method] |= self.index.mask(f"{method}:{path}:{line}")
-        return None if any(mask & 1 for mask in masks) else masks
+        return masks
 
     def fixture_changes(self, text):
         if not text.startswith("diff --git a/tests/fixtures/"):
@@ -298,6 +297,7 @@ class LongCases:
         jobs = []
         cleared = set()
         expected = 0.22
+        setup_changed = any(mask & 1 for mask in masks)
         for test in sorted(active, key=self.scheduler.durations.get, reverse=True):
             method = self.tests[test]
             count = self.index.mask(f"count:{method}")
@@ -306,7 +306,8 @@ class LongCases:
             if not count or bits & 1:
                 continue
             if not bits:
-                cleared.add(test)
+                if not setup_changed:
+                    cleared.add(test)
                 continue
             cases = tuple(i for i in range(count) if bits & (2 << i))
             cost = self.index.mask(f"setup:{method}") / 1e6
