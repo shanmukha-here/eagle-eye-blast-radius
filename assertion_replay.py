@@ -111,8 +111,7 @@ def worker(send, root, index, tasks, cap):
                         elif kind == "direct":
                             recipe, values = payload
                             namespace = getattr(type(instance), test).__globals__
-                            eval(compile(recipe, "<clean assertion>", "eval", dont_inherit=True),
-                                 namespace, {"self": instance, **values})
+                            eval(recipe, namespace, {"self": instance, **values})
                         else:
                             raise ValueError("Unsupported assertion payload")
                     finally:

@@ -65,6 +65,10 @@ def main(trace, output):
             dump = base64.b85decode(payload)
             unit = marshal.loads(dump)
             flags = ELIGIBLE if name not in opaque and name not in hazardous else 0
+            if unit and unit[0] == "direct":
+                _, recipe, bindings = unit
+                program = compile(recipe, "<clean assertion>", "eval", dont_inherit=True)
+                dump = marshal.dumps(("direct", program, bindings))
             query_key = None
             if query_rows and name.endswith("::test_execute_tpcds") and unit and unit[0] == "subtest":
                 args = unit[1]
