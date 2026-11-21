@@ -6,7 +6,7 @@ from functools import lru_cache
 from dependencies import name_bits
 from impact import UnknownChange, patched, split_diff, syntax
 from precision_index import PrecisionIndex
-from receiver_edits import classes, plain_method
+from receiver_edits import classes, declaration, plain_method
 
 
 FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -115,6 +115,24 @@ class Recovery:
             return None
         return (self.receivers.bits(f"r:{tag}:*") | details.flow.opaque |
                 getattr(details.flow, "reflect", 0) | self.impact.files.get(path, {}).get(0, 0))
+
+    @lru_cache(maxsize=8)
+    def inert_addition(self, text):
+        """Allow a clean verdict only for an isolated, unread plain member."""
+        try:
+            edits = split_diff(text)
+            path, = edits
+            if not path.startswith("sqlglot/") or not path.endswith(".py") or path.endswith("/__init__.py"):
+                return False
+            source = self.impact.base(path)[0]
+            before = syntax(path, source)[0]
+            after = syntax(path, patched(source, edits[path]))[0]
+            member = declaration(before, after)
+            if member is None or any(key[:2] == member for key in self.clean_atoms(path)):
+                return False
+            return self.inert_method(path, after, *member) is not None
+        except (OSError, SyntaxError, UnicodeError, UnknownChange, ValueError, RecursionError):
+            return False
 
     @lru_cache(maxsize=8)
     def declarations(self, text):

@@ -319,7 +319,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     precision.stats["ordinary_long_unobserved"] = len(active - retained)
                     plan = scheduler.repack(selected.difference(active - retained), plan)
         if text:
-            checked = verify.certify_small(text, plan, precision.short_certificate)
+            checked = verify.certify_small(text, plan, lambda value: (
+                precision.short_certificate(value) or recovery.inert_addition(value)
+            ))
             if checked != plan:
                 precision.stats["small_clean_cohort"] = sum(map(len, plan))
                 plan = checked
@@ -393,7 +395,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                             checked = verify.refine(text, plan, workspace=workspace)
                             # Definition-time behavior can change even when
                             # the candidate methods pass their assertions.
-                            if checked:
+                            if checked or recovery.inert_addition(text):
+                                if not checked:
+                                    precision.stats["inert_clean"] = True
                                 plan = checked
                     precision.stats["import_recovery"] = mask.bit_count()
                     precision.stats["recovery_replaces"] = True
