@@ -9,7 +9,7 @@ import re
 from impact import UnknownChange, patched, split_diff, syntax
 from module_topology import addition, hard_topology, opaque_format
 from observation_index import default_changes
-from receiver_edits import METHODS, classes, declaration
+from receiver_edits import classes, declaration
 from refine import changed_fields
 from registry_guard import changes_routing
 
@@ -49,42 +49,10 @@ def member_change(before, after):
     return None
 
 
-def forwards_to_parent(method):
-    if len(method.body) != 1 or not isinstance(method.body[0], ast.Return):
-        return False
-    call = method.body[0].value
-    if (not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute)
-            or call.func.attr != method.name):
-        return False
-    parent = call.func.value
-    args = method.args
-    return (isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name)
-            and parent.func.id == "super" and not parent.args and not parent.keywords
-            and not args.posonlyargs and len(args.args) == 1 and not args.kwonlyargs
-            and not args.defaults and args.vararg is not None and args.kwarg is not None
-            and len(call.args) == 1 and isinstance(call.args[0], ast.Starred)
-            and isinstance(call.args[0].value, ast.Name) and call.args[0].value.id == args.vararg.arg
-            and len(call.keywords) == 1 and call.keywords[0].arg is None
-            and isinstance(call.keywords[0].value, ast.Name) and call.keywords[0].value.id == args.kwarg.arg)
-
-
 def enum_class(owner):
     return any((base.id if isinstance(base, ast.Name) else
                 base.attr if isinstance(base, ast.Attribute) else "").endswith("Enum")
                for base in owner.bases)
-
-
-def member_binding_changed(before, after, member):
-    owner, name = member
-    prior = dict(classes(before.body))[owner]
-    current = dict(classes(after.body))[owner]
-    if enum_class(prior) or enum_class(current):
-        return True
-    old_names = {node.name for node in prior.body if isinstance(node, METHODS)}
-    return name not in old_names and any(
-        isinstance(node, METHODS) and node.name == name and not forwards_to_parent(node)
-        for node in current.body
-    )
 
 
 def slot_declarations(tree):
@@ -198,7 +166,7 @@ class RiskFeatures:
                             return None
                     defaults = default_changes(old_ast, after_ast) if not member else ()
                     if member:
-                        if guard_bindings and member_binding_changed(old_ast, after_ast, member):
+                        if guard_bindings and enum_class(dict(classes(old_ast.body))[member[0]]):
                             return None
                         families.add("member")
                         words.update(part.casefold() for part in (*member[0].split("."), member[1]))
