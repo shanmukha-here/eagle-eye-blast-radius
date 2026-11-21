@@ -3,6 +3,7 @@ import ast
 from precision_body import body_regions, local_bindings
 from precision_index import PrecisionIndex, build
 from registry_keys import one_entry
+from long_gate import LongGate
 
 
 def test_dense_index_reads_exact_bits(tmp_path):
@@ -52,3 +53,13 @@ def test_local_bindings_excludes_global_shadowing_and_frame_reads():
     assert not local_bindings(code(a), code(b))
     a = "def fn(value):\n    item = value\n    return locals()\n"
     assert not local_bindings(code(a), code(a.replace("item", "result")))
+
+
+def test_integration_queries_require_execution_evidence(tmp_path):
+    from selector import Scheduler
+
+    name = "tests/test_executor.py::TestExecutor::test_execute_tpcds"
+    scheduler = Scheduler([{"number": 0, "id": name, "seconds": 21.454}], [name])
+    gate = LongGate(scheduler, [name], tmp_path, 60)
+    assert gate.apply("synthetic patch", [[0]]) == [[0]]
+    assert 0 not in gate.long

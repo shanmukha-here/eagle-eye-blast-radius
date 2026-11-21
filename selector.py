@@ -19,9 +19,8 @@ from decision import Execution, PatchWorkspace
 from flow import Flow
 from observed import Observers
 from exact_tests import ExactTests
-from optimizer_probe import Replay, local_edit
+from optimizer_probe import Replay
 from miniatures import CORE, Miniatures
-from memo_witness import bypass_only
 from startup import Startup
 from narrow import Narrow
 from observation_index import ObservationIndex
@@ -34,7 +33,7 @@ from receiver_edits import ReceiverEdits
 from registry_guard import changes_routing
 from precision import Precision
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
-from refine import Details, bindings
+from refine import Details
 
 
 class Scheduler:
@@ -144,33 +143,6 @@ def needs_parser_guard(impact, text):
 
 
 
-def replay_body(impact, text):
-    """Identify optimizer code that cannot execute at the fixture parse boundary."""
-    if not text.startswith(("diff --git a/sqlglot/optimizer/", "diff --git a/sqlglot/schema.py ")):
-        return None
-    try:
-        edits = split_diff(text)
-        if len(edits) != 1:
-            return None
-        path, hunks = next(iter(edits.items()))
-        source, (outer, old), code = impact.base(path)
-        _, (new_outer, revised), compiled = syntax(path, patched(source, hunks))
-        if outer != new_outer or old.keys() != revised.keys():
-            return None
-        changed = [k for k in old if old[k][2] != revised[k][2]]
-        if len(changed) != 1:
-            return None
-        key = changed[0]
-        before, after = old[key][3], revised[key][3]
-        if path == "sqlglot/schema.py" and key == ("MappingSchema", "_normalize_name", 0) and bypass_only(before, after):
-            return "memo"
-        if bindings(code) == bindings(compiled) and local_edit(before, after):
-            return path
-    except (UnknownChange, OSError, SyntaxError, UnicodeError, ValueError, RecursionError, KeyError):
-        return None
-    return None
-
-
 def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_name("base.z")):
     started = seconds()
     tests = json.loads((data / "tests.json").read_bytes())["tests"]
@@ -274,8 +246,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     mask = execution.refine(text, narrow.select(text, impact.select(text)), workspace)
                     keep = 0
                     legacy = incumbent.details.replay
-                    legacy.last_seconds = 0.0
-                    legacy.last_mismatch = None
                     legacy.graph_changed = False
                     # An empty emitted plan is its own intersection.
                     if scheduler.schedule(mask) != "[]":
@@ -306,9 +276,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     plan = references.apply(text, replay_plan)
                     if not legacy.graph_changed:
                         plan = queries.apply(text, plan, workspace, budget.cap, query_mask)
-                    plan = gate.apply(text, plan, workspace,
-                                      legacy.last_seconds, legacy.last_mismatch,
-                                      lambda: replay_body(impact, text), legacy.graph_changed)
+                    plan = gate.apply(text, plan, workspace)
                     if parser_id is not None and any(parser_id in group for group in plan):
                         if unexecuted_return(impact, text, parser_bit):
                             retained = {n for group in plan for n in group if n != parser_id}

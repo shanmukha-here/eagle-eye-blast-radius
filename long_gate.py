@@ -8,20 +8,18 @@ import time
 
 from decision import affected_dialects, PatchWorkspace
 from impact import split_diff, UnknownChange
-from miniatures import CORE
 
 
 # Reduced parser runs did not preserve full-size failures. The intersection's
 # original parser safeguards own that test.
 LONG_TESTS = {
-    "test_execute_tpcds": "tpcds",
     "test_generator_memory": "memory",
     "test_execute_tpch": "execute",
     "test_optimized_tpch": "optimized",
 }
 
 
-def probe(connection, root, targets, edits, first, reuse_file):
+def probe(connection, root, targets, edits):
     os.setsid()
     with open(os.devnull, "w") as sink:
         os.dup2(sink.fileno(), 1)
@@ -29,19 +27,12 @@ def probe(connection, root, targets, edits, first, reuse_file):
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(root))
     os.chdir(root)
-    from memo_witness import same_cache_results
-    from query_sentinel import check
     from short_probe import execute, memory, optimized
 
     for number, kind in targets:
         try:
             if kind == "memory":
                 passed = memory(affected_dialects(edits))
-            elif kind == "tpcds":
-                if reuse_file == "memo":
-                    passed = same_cache_results() or check(first, "sqlglot/schema.py")
-                else:
-                    passed = check(first, reuse_file)
             else:
                 passed = (execute if kind == "execute" else optimized)()
             if passed:
@@ -67,17 +58,12 @@ class LongGate:
                 self.long[number] = LONG_TESTS[name]
 
     def supported(self, kind, edits):
-        if kind == "tpcds":
-            # SQL fingerprints do not check changes to the executor itself.
-            return not any(path in CORE or path.startswith("sqlglot/executor/") or path == "sqlglot/serde.py"
-                           for path in edits)
         if kind == "memory":
             return all(path.startswith(("sqlglot/generators/", "sqlglot/dialects/"))
                        or path == "sqlglot/generator.py" for path in edits)
         return not any(path.startswith("sqlglot/executor/") or path == "sqlglot/serde.py" for path in edits)
 
-    def apply(self, text, workers, workspace=None, earlier=0.0, first=None, reuse=None,
-              graph_changed=False):
+    def apply(self, text, workers, workspace=None):
         if self.available < 0.25:
             return workers
         run = {n for group in workers for n in group}
@@ -101,19 +87,9 @@ class LongGate:
         smaller = self.scheduler.repack(run - {n for n, _ in targets}, workers)
         gain = (self.scheduler.cost(workers) - self.scheduler.cost(smaller)) / 1000
         cap = min(5.0, self.available, gain * 0.55)
-        # The full TPC-DS witness must walk every executable query even on
-        # an unchanged tree. Subsecond windows cannot certify that workload.
-        if targets[0][1] == "tpcds" and earlier:
-            # A changed optimizer graph requires complete result comparisons.
-            # Do not retry that expensive witness after the screening replay.
-            if graph_changed:
-                return workers
-            cap = min(cap, 4.0 - earlier)
-        minimum = 1.35 if targets[0][1] == "tpcds" else 0.25
         cap = getattr(self, "cpu_limit", float)(cap)
-        if cap < minimum:
+        if cap < 0.25:
             return workers
-        reuse_file = reuse() if reuse is not None and targets[0][1] == "tpcds" else None
         started = time.monotonic()
         try:
             with contextlib.nullcontext(workspace) if workspace else PatchWorkspace(self.base, text) as overlay_tree:
@@ -122,7 +98,7 @@ class LongGate:
                     recv, send = self.ctx.Pipe(duplex=False)
                     stack.enter_context(recv)
                     stack.enter_context(send)
-                    child = self.ctx.Process(target=probe, args=(send, root, targets, list(edits), first, reuse_file))
+                    child = self.ctx.Process(target=probe, args=(send, root, targets, list(edits)))
                     child.start()
                     send.close()
                     try:

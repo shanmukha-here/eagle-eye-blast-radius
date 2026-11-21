@@ -53,9 +53,10 @@ class QueryGate:
         if len(edits) != 1:
             return None
         path, hunks = next(iter(edits.items()))
-        if (not (path.startswith(("sqlglot/optimizer/", "sqlglot/executor/"))
-                 or path in ("sqlglot/planner.py", "sqlglot/schema.py"))
-                or path.endswith("/__init__.py") or self.index.get("boundary:" + path)):
+        prior_scope = (path.startswith(("sqlglot/optimizer/", "sqlglot/executor/"))
+                       or path in ("sqlglot/planner.py", "sqlglot/schema.py"))
+        if (not path.startswith("sqlglot/") or path.endswith("/__init__.py")
+                or self.index.get("boundary:" + path) or not prior_scope and observed is None):
             return None
         original, (outer, scopes), code = self.impact.base(path)
         _, (updated, revised), new_code = syntax(path, patched(original, hunks))
@@ -63,6 +64,7 @@ class QueryGate:
             return None
         optimize = execute = 0
         found = False
+        missing_stage = False
         for key, (lineno, _, digest, before) in scopes.items():
             _, _, new_digest, after = revised[key]
             if digest == new_digest:
@@ -72,7 +74,11 @@ class QueryGate:
             location = f"{path}:{lineno}:{'.'.join(key[:-1])}"
             hit = self.index.get("code:" + location)
             if not hit:
-                return None
+                if observed is None:
+                    return None
+                missing_stage = True
+                found = True
+                continue
             changed = regions(before, after)
             if len(changed) == 1 and changed[0][0] == changed[0][1]:
                 hit = self.index.get(f"line:{location}@{changed[0][0]}") or hit
@@ -88,7 +94,7 @@ class QueryGate:
         if observed is not None:
             # A query that reached the line in the independent full trace
             # needs a complete result check if its stage is unresolved here.
-            unresolved = observed & ~relevant
+            unresolved = observed if missing_stage else observed & ~relevant
             execute |= unresolved
             relevant = observed
         for i in range(relevant.bit_length()):
