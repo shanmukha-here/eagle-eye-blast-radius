@@ -11,6 +11,8 @@ from dependencies import Dependencies
 from flow import Flow
 from observed import Observers
 from optimizer_probe import Replay
+from miniatures import Miniatures
+from startup import Startup
 from impact import Impact
 from refine import Details
 
@@ -71,6 +73,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     impact.details.flow.none_safe = impact.details.observers.none_safe
     scheduler = Scheduler(tests, profile["ids"])
     impact.details.replay = Replay(profile["ids"], base, map_path.parent)
+    impact.details.startup = Startup(map_path.parent)
+    impact.details.miniatures = Miniatures(profile["ids"], base, map_path.parent)
     impact.scheduler = scheduler
     deadline = time.monotonic() + 145
     for path in sorted((data / "commits").glob("*.patch")):

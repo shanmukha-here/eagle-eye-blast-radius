@@ -19,3 +19,12 @@ tools/*
 !reach.py
 !observed.py
 !observers.z
+!parser_probe.py
+!short_probe.py
+!miniatures.py
+!stress_guard.py
+!startup.py
+!startup.z
+!memory_index.z
+!tools/build_tpch_sql.py
+!stress.z

@@ -64,7 +64,7 @@ class Replay:
         if benefit < 5:
             return mask
         opt, whole = cases
-        if len(whole) > 32:
+        if len(whole) > 48:
             return mask
         # Check cheap optimizer postconditions first. A changed result requires
         # executing the original query and comparing its complete table.

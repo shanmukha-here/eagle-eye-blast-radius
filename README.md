@@ -107,3 +107,7 @@ Supply an external `--config` JSON file, defaulting to `../localboard.json`. Its
 An optional SSH relay config accepts `ssh_host`, `remote_dir`, `calibration` and an optional `ssh` executable. It stages the frozen archive, harness and current ledger in a temporary directory on the configured Docker host. The host's dataset config is read from `remote_dir/localboard.json`.
 
 An optional external config field `historical_response` holds separate local and board score pairs for `proxy` and `shadow`, plus a `realized_fraction` between zero and one. The simulator prints both the median-ratio estimate and the forecast fitted to these historical measurements. Below the best measured local score it credits the specified fraction of additional local savings.
+
+The parser replay runs the upstream node-limit assertions in a new interpreter with 100 columns and the original nesting depth. Before clearing a test, it checks that every recorded token pair at the changed match site produces the same decision at full width. Unknown changes, failed probes and expired reservations keep the test.
+
+The executor probes compare the original query inputs to the pinned DuckDB fixtures. The generator memory probe keeps all 100 warm-up and 1,000 measured constructions for each affected dialect. The clean traces include process startup and bind results to pytest test IDs. Build-time fixture fingerprints come from the pinned checkout.

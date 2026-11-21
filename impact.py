@@ -213,7 +213,12 @@ class Impact:
         updated_code = compile(modified, path, "exec", dont_inherit=True)
         updated, new_scopes = structure(ast.parse(modified))
         flow = getattr(self.details, "flow", None)
+        startup = getattr(self.details, "startup", None) if single else None
         if skeleton != updated or scopes.keys() != new_scopes.keys():
+            if startup:
+                mask = startup.registry(path, source, modified, self.details.access)
+                if mask is not None and self.details.import_valid(path, modified):
+                    return mask | rows.get(0, 0) | flow.opaque
             if flow and single and flow.equality(path, ast.parse(source), ast.parse(modified)):
                 return rows.get(0, 0) | flow.opaque
             if self.details and single:
@@ -223,6 +228,11 @@ class Impact:
             return self.full
         affected = [k for k in scopes if scopes[k][2] != new_scopes[k][2]]
         readers = rows.get(0, 0)
+        if len(affected) == 1 and startup:
+            key = affected[0]
+            mask = startup.lazy(path, key, scopes[key][3], new_scopes[key][3])
+            if mask is not None:
+                return mask | readers | flow.opaque
         if not affected:
             # Non-semantic edits can still move line information or affect source readers.
             fallback = readers | self.visitors.get(path, self.full)
@@ -266,6 +276,11 @@ class Impact:
             key = affected[0]
             selected = replay.select(path, modified, key, scopes[key], new_scopes[key], selected,
                                      getattr(self, "scheduler", None))
+        miniature = getattr(self.details, "miniatures", None)
+        if miniature and single and len(affected) == 1:
+            key = affected[0]
+            selected = miniature.select(selected, getattr(self, "scheduler", None), path, modified,
+                                        key, scopes[key], new_scopes[key], readers)
         return selected
 
     def select(self, patch):
