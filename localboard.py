@@ -53,11 +53,11 @@ def ratios(path):
     return [statistics.median(v) if v else None for v in values]
 
 
-def matched_ratio(path):
+def matched_ratio(path, heading="Matched commit"):
     pairs = []
     reading = False
     for line in path.read_text().splitlines():
-        if line.startswith("| Matched commit |"):
+        if line.startswith(f"| {heading} |"):
             reading = True
             continue
         if not line.startswith("|"):
@@ -289,7 +289,7 @@ def evaluate(config, confdir, archive, work, sha):
             print(f"{label} median={results[label]}s", flush=True)
     ledger = confdir / config["calibration"]
     if "proxy" in results:
-        ratio = matched_ratio(ledger)
+        ratio = matched_ratio(ledger, config.get("matched_heading", "Matched commit"))
         if ratio is None:
             print("Prediction unavailable until historical proxy replays are calibrated.")
             return
