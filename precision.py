@@ -1,6 +1,9 @@
 """Apply fine observation masks for verified bodies and dispatch values."""
 
+import re
+
 from impact import UnknownChange, patched, split_diff, syntax
+from miniatures import CORE
 from precision_body import evidence, footprint, range_mask
 from precision_index import PrecisionIndex
 from registry_keys import one_entry
@@ -69,6 +72,48 @@ class Precision:
             self.stats["line_cleared"] = len(original - retained)
             workers = self.scheduler.repack(retained, workers)
         return workers, None if outside or protected & self.query_bit else queries
+
+    def unobserved_recovery_bodies(self, text, long_cases, active):
+        """Find long tests with no changed statement on their only observed path."""
+        if self.index is None or not active:
+            return set()
+        try:
+            edits = split_diff(text)
+            if not 2 <= len(edits) <= 4:
+                return set()
+            scopes = {path: long_cases.recovery_scope(text, active, edits={path: hunks})
+                      for path, hunks in edits.items()}
+            unobserved = set()
+            for section in re.split(r"(?=^diff --git )", text, flags=re.MULTILINE)[1:]:
+                path, = split_diff(section)
+                if path in CORE or not path.startswith("sqlglot/"):
+                    continue
+                candidates = scopes[path].copy()
+                for other, users in scopes.items():
+                    if other != path:
+                        candidates.difference_update(users)
+                if not candidates:
+                    continue
+                changes = footprint(self.impact, section)
+                if changes is None:
+                    continue
+                case_masks = long_cases.body_masks(changes)
+                if case_masks is None:
+                    continue
+                _, changed, inserted, condition, branches, outside, _ = evidence(self.index, changes)
+                observed = changed | inserted | condition | branches | outside | self.protected(changes)
+                unobserved.update(test for test in candidates
+                                  if not observed & self.scheduler.bits[test]
+                                  and not case_masks[long_cases.tests[test]])
+            if unobserved and all(
+                self.impact.files.get(path, {}).get(0) is not None
+                if path.startswith("tests/fixtures/") else long_cases.verified_source(path, hunks)
+                for path, hunks in edits.items()
+            ):
+                return unobserved
+        except (OSError, SyntaxError, UnicodeError, UnknownChange, ValueError, RecursionError):
+            pass
+        return set()
 
     def short_certificate(self, text):
         """Only clear the whole short cohort for a body-only, local change."""

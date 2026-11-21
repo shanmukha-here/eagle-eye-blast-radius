@@ -227,6 +227,9 @@ class LongCases:
             # Independent sub-case traces do not capture all interactions
             # between edits in separate modules and the suite's shared state.
             return None
+        return self.body_masks(changes)
+
+    def body_masks(self, changes):
         masks = [0] * len(METHODS)
         for path, sites in changes.items():
             for _, _, (body, anchors, control) in sites:

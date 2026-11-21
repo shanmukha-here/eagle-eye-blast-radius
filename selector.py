@@ -292,6 +292,10 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             skipped = relevant - retained
             if skipped:
                 precision.stats["recovery_long_unobserved"] = sorted(skipped)
+            body_skips = precision.unobserved_recovery_bodies(text, long_cases, retained)
+            if body_skips:
+                precision.stats["recovery_long_body"] = len(body_skips)
+                skipped.update(body_skips)
             selected = (extra if replace else selected | extra) - skipped
             plan = scheduler.repack(selected, plan)
             precision.stats["import_recovery"] = mask.bit_count()
