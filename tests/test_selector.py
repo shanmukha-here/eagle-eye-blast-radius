@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from cold_import import ColdImport
 from impact import Impact
+from precision_index import build
 from selector import Scheduler
 
 
@@ -46,6 +48,19 @@ class ImpactTests(unittest.TestCase):
 
     def test_comment_includes_source_readers(self):
         self.assertEqual(self.impact.select(self.patch("# explanation\n" + self.source)), 7)
+
+    def test_cold_import_shortcut_requires_the_same_definition_skeleton(self):
+        index = self.impact.root / "cold.index"
+        build(index, {self.name: 1}, 1)
+        check = ColdImport(index, self.impact)
+        self.assertTrue(check(self.name, self.source.replace("x + 1", "x - 1")))
+        self.assertFalse(check(self.name, self.source.replace("(x)", "(x=3)")))
+
+    def test_cold_import_shortcut_keeps_recorded_calls(self):
+        index = self.impact.root / "cold.index"
+        build(index, {self.name: 1, self.name + ":calculate": 1}, 1)
+        check = ColdImport(index, self.impact)
+        self.assertFalse(check(self.name, self.source.replace("x + 1", "x - 1")))
 
 
 class SchedulingTests(unittest.TestCase):
