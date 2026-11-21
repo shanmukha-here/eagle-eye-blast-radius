@@ -54,3 +54,6 @@ tools/*
 
 !observation_file.py
 !tools/build_observation_file.py
+
+!surface.py
+!tools/build_project_readers.py

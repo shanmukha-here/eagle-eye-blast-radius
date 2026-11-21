@@ -22,6 +22,7 @@ from memo_witness import bypass_only
 from startup import Startup
 from narrow import Narrow
 from observation_index import ObservationIndex
+from surface import Surface
 from parser_signal import unexecuted_return
 from reference_replay import ReferenceReplay
 from long_gate import LongGate
@@ -199,6 +200,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     observation = ObservationIndex(impact, map_path.with_name("values.z"))
+    surface = Surface(impact, map_path.parent)
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
     verify = ExactTests(scheduler, tests, base, len(patches), map_path.with_name("unit_ready.json"))
     parser_bit = impact.details.miniatures.tests.get("parser", 0)
@@ -211,14 +213,15 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 plan = scheduler.intersect(before, mask)
             else:
                 text = path.read_text("utf-8")
-                direct = observation.edit(text)
+                metadata = surface.select(text)
+                direct = observation.edit(text) if metadata is None else ("metadata", metadata)
                 if direct is not None:
                     kind, observed = direct
                     observed_plan = json.loads(scheduler.schedule(observed, pad=False))
                     if kind == "syntax":
                         observed_plan = verify.collection(text, observed_plan)
                     if observed_plan is not None and (
-                        kind in ("default", "attribute", "import", "syntax") or scheduler.cost(observed_plan) <= 3000
+                        kind in ("default", "attribute", "import", "metadata", "syntax") or scheduler.cost(observed_plan) <= 3000
                     ):
                         plan = references.apply(text, observed_plan)
                         plan = verify.refine(text, plan)
