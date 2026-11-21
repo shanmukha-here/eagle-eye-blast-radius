@@ -40,7 +40,7 @@ def build():
     STORE.write_text(json.dumps(rows))
 
 
-def check(optimizer_changed):
+def check():
     from tests.helpers import TPCDS_SCHEMA
     pairs = inputs()
     expected = json.loads(STORE.read_bytes())
@@ -50,8 +50,9 @@ def check(optimizer_changed):
         if fingerprint(sql) != source or bool(meta.get("execute")) != execute:
             return False
         tree, p, d = sql_boundary(sql)
-        if execute and (p != parsed or d != duck or optimizer_changed):
-            if d != duck or optimized_sql(tree) != optimized or p != parsed:
+        if execute:
+            generated = optimized_sql(tree)
+            if d != duck or generated != optimized or p != parsed:
                 changed.append((i, tree))
     if not changed:
         return True

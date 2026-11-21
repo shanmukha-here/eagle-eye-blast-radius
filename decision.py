@@ -1,6 +1,5 @@
 """Run covering tests against an isolated patched tree under a batch wall budget."""
 import contextlib
-import json
 import multiprocessing
 import os
 import signal
@@ -12,6 +11,7 @@ from pathlib import Path
 
 from impact import split_diff, patched, UnknownChange
 from miniatures import CORE
+from optimizer_probe import cost
 
 
 def overlay(base, root, edits):
@@ -48,6 +48,7 @@ def overlay(base, root, edits):
 
 def direct(ids):
     passed = []
+    all_passed = True
     loader = unittest.TestLoader()
     for name in ids:
         mod, *parts = name.split("::")
@@ -56,9 +57,10 @@ def direct(ids):
         suite.run(result)
         if not (result.testsRun == 1 and result.wasSuccessful() and not result.skipped
                 and not result.expectedFailures and not result.unexpectedSuccesses):
-            return [], False
-        passed.append(name)
-    return passed, True
+            all_passed = False
+        else:
+            passed.append(name)
+    return passed, all_passed
 
 
 def affected_dialects(paths):
@@ -89,7 +91,7 @@ def worker(conn, root, inexpensive, checks, paths):
                     ok = True
                 else:
                     from query_sentinel import check
-                    ok = check(any(p.startswith("sqlglot/optimizer/") for p in paths))
+                    ok = check()
                 if ok:
                     cleared.append(node)
         conn.send(cleared)
@@ -143,12 +145,22 @@ class Execution:
                       and path != "sqlglot/dialects/dialect.py"):
                     checks.append(("parser", name))
                 elif (name.endswith("::test_execute_tpcds") and single and
-                      (path in CORE or path.startswith(("sqlglot/parsers/", "sqlglot/optimizer/", "sqlglot/generators/")))
+                      (path in CORE or path.startswith(("sqlglot/parsers/", "sqlglot/optimizer/")))
                       and not path.endswith("/__init__.py")):
                     checks.append(("tpcds", name))
         if not inexpensive and not checks:
             return mask
-        cap = min(self.budget, self.deadline-time.monotonic(), 3.5 if checks else 1.1)
+        requested = inexpensive + [name for _, name in checks]
+        cheapest = mask
+        for name in requested:
+            cheapest &= ~(1 << self.names[name])
+        gain = (cost(self.scheduler, mask) - cost(self.scheduler, cheapest)) / 1000
+        if gain < 0.4:
+            return mask
+        # Repacking can leave the same long test on the critical worker even
+        # after many cheap tests pass. Skip work whenever it cannot pay for itself.
+        horizon = 6.0 if any(kind == "tpcds" for kind, _ in checks) else (2.5 if checks else 1.1)
+        cap = min(self.budget, self.deadline-time.monotonic(), gain * 0.8, horizon)
         if cap < 0.3:
             return mask
         started = time.monotonic()
