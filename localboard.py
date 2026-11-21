@@ -300,7 +300,7 @@ def evaluate(config, confdir, archive, work, sha):
         ("public", public_ratio, "Predicted board"),
         ("blind", blind_ratio, "Mutation sensitivity"),
     ]:
-        if ratio is not None:
+        if ratio is not None and label in results:
             print(
                 f"{title} = {rounded(results[label] * ratio)} s ({label} {results[label]} s x median ratio {ratio:.6f})"
             )
