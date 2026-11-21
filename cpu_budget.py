@@ -3,10 +3,13 @@
 from resource import getrusage, RUSAGE_CHILDREN, RUSAGE_SELF
 
 
+live_import_cpu = 0.0
+
+
 def seconds():
     parent = getrusage(RUSAGE_SELF)
     children = getrusage(RUSAGE_CHILDREN)
-    return parent.ru_utime + parent.ru_stime + children.ru_utime + children.ru_stime
+    return parent.ru_utime + parent.ru_stime + children.ru_utime + children.ru_stime + live_import_cpu
 
 
 class CpuBudget:

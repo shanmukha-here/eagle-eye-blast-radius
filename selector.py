@@ -32,6 +32,7 @@ from long_gate import LongGate
 from long_cases import LongCases
 from tpcds_replay import QueryGate
 from tpcds_render import RenderProof
+from warm_import import WarmImport
 from receiver_edits import ReceiverEdits
 from registry_guard import changes_routing
 from precision import Precision
@@ -210,6 +211,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     access = Dependencies(json.loads(zlib.decompress(map_path.with_name("access.z").read_bytes())))
     flow_map = json.loads(zlib.decompress(map_path.with_name("flow.z").read_bytes()))
     impact = Impact(base, profile, Details(data_map, profile["ids"], base, access))
+    warm_import = WarmImport(base)
+    impact.details.warm_import = warm_import
     cold_file = map_path.with_name("cold_import.index")
     if cold_file.is_file():
         impact.details.cold_import = ColdImport(cold_file, impact)
@@ -492,8 +495,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         except UnicodeError:
             plan = fallback_plan
         emit(path, plan, beginning, risk_text)
+    warm_import.close()
     if report and cold_file.is_file():
         print(json.dumps(dict(cold_import_checks_skipped=impact.details.cold_import.shortcuts)), file=sys.stderr)
+    if report:
+        print(json.dumps(dict(warm_import_checks=warm_import.served)), file=sys.stderr)
 
 
 if __name__ == "__main__":

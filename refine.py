@@ -259,6 +259,11 @@ class Details:
         cold = getattr(self, "cold_import", None)
         if cold is not None and cold(path, modified):
             return True
+        warm = getattr(self, "warm_import", None)
+        if warm is not None:
+            result = warm(path, modified)
+            if result is not None:
+                return result
         helper = Path(__file__).with_name("import_check.py")
         try:
             result = subprocess.run(

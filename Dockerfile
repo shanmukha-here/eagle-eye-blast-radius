@@ -68,6 +68,7 @@ COPY cold_import.py ./
 COPY tools/build_cold_import_index.py /build_cold_import_index.py
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app python -B /build_cold_import_index.py /base /app/cold_import.index /app/import_check.py
 COPY tpcds_render.py ./
+COPY warm_import.py ./
 COPY tools/build_tpcds_render.py /build_tpcds_render.py
 RUN cd /base && PYTHONHASHSEED=0 PYTHONPATH=/app:/base python -B /build_tpcds_render.py /base /app/tpcds_render.index
 CMD ["python", "/app/selector.py"]

@@ -88,4 +88,5 @@ tools/*
 !cold_import.py
 !tools/build_cold_import_index.py
 !tpcds_render.py
+!warm_import.py
 !tools/build_tpcds_render.py
