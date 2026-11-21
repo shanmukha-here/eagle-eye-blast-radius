@@ -255,11 +255,10 @@ class Details:
 
     @functools.lru_cache(maxsize=96)
     def import_valid(self, path, modified):
-        module = path[:-3].replace("/", ".")
         helper = Path(__file__).with_name("import_check.py")
         try:
             result = subprocess.run(
-                [sys.executable, "-IBS", str(helper), str(self.root), module],
+                [sys.executable, "-IBS", str(helper), str(self.root), path],
                 input=modified.encode(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

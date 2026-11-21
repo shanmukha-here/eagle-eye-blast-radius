@@ -29,9 +29,10 @@ class PatchedModule(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 if __name__ == "__main__":
-    root, module = sys.argv[1:]
+    root, path = sys.argv[1:]
+    module = path[:-3].replace("/", ".").removesuffix(".__init__")
     source = sys.stdin.buffer.read()
-    filename = str(Path(root) / (module.replace(".", "/") + ".py"))
+    filename = str(Path(root) / path)
     sys.meta_path.insert(0, PatchedModule(module, filename, source))
     sys.path.insert(0, root)
     from sqlglot.dialects import Dialect

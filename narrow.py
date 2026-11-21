@@ -8,7 +8,47 @@ from impact import patched, split_diff, structure, UnknownChange
 
 
 def imports(tree):
-    return [ast.dump(n) for n in ast.walk(tree) if isinstance(n, (ast.ImportFrom, ast.Import))]
+    edges = []
+    def visit(node, context):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            edges.append((context, ast.dump(node)))
+            return
+        if isinstance(node, (ast.If, ast.IfExp, ast.While)):
+            context += (ast.dump(node.test),)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            context += (node.name,)
+        for field, value in ast.iter_fields(node):
+            if isinstance(value, list):
+                for child in value:
+                    if isinstance(child, ast.AST):
+                        visit(child, context + (field,))
+            elif isinstance(value, ast.AST):
+                visit(value, context + (field,))
+    visit(tree, ())
+    return edges
+
+
+def literal_defaults(old, new):
+    """A replacement of existing literal defaults preserves definition identity."""
+    left, right = ast.parse(old), ast.parse(new)
+    changed = []
+    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
+    for a, b in zip(ast.walk(left), ast.walk(right)):
+        if type(a) != type(b) or not isinstance(a, functions):
+            continue
+        defaults = a.args.defaults + a.args.kw_defaults
+        revised = b.args.defaults + b.args.kw_defaults
+        if len(defaults) != len(revised) or a.decorator_list or b.decorator_list:
+            continue
+        if any(isinstance(x, ast.Constant) and isinstance(y, ast.Constant) and
+               type(x.value) == type(y.value) and x.value != y.value for x,y in zip(defaults, revised)):
+            if all((x is None and y is None) or
+                   (isinstance(x, ast.Constant) and isinstance(y, ast.Constant) and type(x.value)==type(y.value))
+                   for x,y in zip(defaults, revised)):
+                changed.append((a.lineno, a.end_lineno))
+                b.args.defaults, b.args.kw_defaults = a.args.defaults, a.args.kw_defaults
+    return changed if changed and ast.dump(left) == ast.dump(right) else []
+
 
 
 def fixture_inputs(text):
@@ -63,9 +103,19 @@ class Narrow:
                 # Import-time execution can propagate the change to dependent modules.
                 if selected != full and self.details.import_valid(path, modified):
                     return selected
-        if not path.startswith('sqlglot/') or not self.details.import_valid(path, modified):
+        if path.startswith('sqlglot/') and skeleton != after_skeleton:
+            ranges = literal_defaults(source, modified)
+            if ranges:
+                selected = readers | self.details.flow.opaque | self.details.positions
+                for line, mask in self.details.lines[path].items():
+                    if any(start <= line <= end for start, end in ranges):
+                        selected |= mask
+                if selected != full and self.details.import_valid(path, modified):
+                    return selected
+        projected = group | self.impact.visitors.get(path, full) | readers | self.details.flow.opaque
+        if projected == full or not path.startswith('sqlglot/') or not self.details.import_valid(path, modified):
             return full
-        return group | self.impact.visitors.get(path, full) | readers | self.details.flow.opaque
+        return projected
 
     def select(self, text, selected):
         full = self.impact.full

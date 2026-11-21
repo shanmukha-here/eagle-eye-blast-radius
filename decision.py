@@ -144,6 +144,7 @@ class Execution:
         self.names = {n:i for i,n in enumerate(names)}
         self.durations = {name:scheduler.durations[num] for num,bit in scheduler.bits.items()
                           if bit for name in [names[bit.bit_length()-1]]}
+        self.full = (1 << len(names)) - 1
         self.order = sorted(self.durations, key=self.durations.get, reverse=True)
         self.budget = min(45.0, count * 0.72)
         self.deadline = time.monotonic() + min(150.0, 2.4 * count + 3.0)
@@ -154,7 +155,7 @@ class Execution:
             self.budget = 0.0
 
     def refine(self, patch, mask):
-        if not mask or self.budget < 0.3 or time.monotonic() >= self.deadline:
+        if not mask or mask == self.full or self.budget < 0.3 or time.monotonic() >= self.deadline:
             return mask
         try:
             edits = split_diff(patch)

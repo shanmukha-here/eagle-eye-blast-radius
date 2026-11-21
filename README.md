@@ -111,3 +111,13 @@ An optional external config field `historical_response` holds separate local and
 The parser replay runs the upstream node-limit assertions in a new interpreter with 100 columns and the original nesting depth. Before clearing a test, it checks that every recorded token pair at the changed match site produces the same decision at full width. Unknown changes, failed probes and expired reservations keep the test.
 
 The executor probes compare the original query inputs to the pinned DuckDB fixtures. The generator memory probe keeps all 100 warm-up and 1,000 measured constructions for each affected dialect. The clean traces include process startup and bind results to pytest test IDs. Build-time fixture fingerprints come from the pinned checkout.
+
+Fallback analysis compares the patched AST with the clean module, including the
+conditions around imports. It covers changed functions, definitions with new literal
+defaults, and test-module importers. The clean component trace follows Python's
+method resolution order when scalar settings are inherited. Reading the names in
+a class dictionary through the builtin dir does not read their values. A separate
+clean unittest trace records which tests consume fixture lists created by class
+setup. That trace applies only when all input statements and the number of paired
+fixture fields are preserved. The bounded executor is reserved for wide selections
+with enough removable worker time to pay for its work.

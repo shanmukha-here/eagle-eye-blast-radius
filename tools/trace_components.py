@@ -4,6 +4,7 @@ PYTEST_DONT_REWRITE: install before upstream classes and their children are impo
 """
 import ast
 import builtins
+import dis
 import sys
 from functools import lru_cache
 from importlib.machinery import SourceFileLoader
@@ -17,14 +18,26 @@ default_code = SourceFileLoader.get_code
 
 
 @lru_cache(maxsize=None)
-def definitions(cls, field):
-    keys = []
-    for base in type.__getattribute__(cls, "__mro__"):
+def definitions(cls, field, own=False):
+    bases = (cls,) if own else type.__getattribute__(cls, "__mro__")
+    for base in bases:
         values = type.__getattribute__(base, "__dict__")
-        module = values.get("__module__", "")
-        if field in values and (module in FAMILIES or module.startswith(MODULES)):
-            keys.append(f"component:{module.replace('.', '/')}.py:{base.__qualname__}:{field}")
-    return keys
+        if field in values:
+            module = values.get("__module__", "")
+            if module in FAMILIES or module.startswith(MODULES):
+                return (f"component:{module.replace('.', '/')}.py:{base.__qualname__}:{field}",)
+            break
+    return ()
+
+
+@lru_cache(maxsize=256)
+def dir_offsets(code):
+    # dir(type) reads keys from the class dictionaries, not their values. Accept
+    # only the exact builtin call on a local variable in the pinned caller.
+    ops = list(dis.get_instructions(code))
+    return {c.offset for a,b,c in zip(ops,ops[1:],ops[2:])
+            if a.opname == "LOAD_GLOBAL" and a.argval == "dir"
+            and b.opname in ("LOAD_FAST", "LOAD_FAST_BORROW") and c.opname == "CALL" and c.arg == 1}
 
 
 def observe(cls, field):
@@ -33,12 +46,14 @@ def observe(cls, field):
         recorder.events[owner].update(definitions(cls, field))
     elif field == "__dict__":
         frame = sys._getframe(2)
+        if frame.f_lasti in dir_offsets(frame.f_code) and frame.f_globals.get("dir", builtins.dir) is builtins.dir:
+            return
         keys = recorder.raw_keys(frame.f_code.co_filename, frame.f_lineno)
         if keys is None:
             keys = type.__getattribute__(cls, "__dict__")
         for name in keys:
             if name.isupper():
-                recorder.events[owner].update(definitions(cls, name))
+                recorder.events[owner].update(definitions(cls, name, own=True))
 
 
 class ComponentType(type):
