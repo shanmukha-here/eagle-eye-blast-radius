@@ -46,17 +46,22 @@ class Scheduler:
         self.order = sorted(self.durations, key=lambda n: (-self.durations[n], n))
         bits = {name: 1 << i for i, name in enumerate(profile_ids)}
         self.bits = {t["number"]: bits.get(t["id"], 0) for t in tests}
+        self.rank = {n: order for order, n in enumerate(self.order)}
+        self.unknown = tuple(n for n in self.order if not self.bits[n])
+        self.by_bit = {}
         self.known = 0
-        for bit in self.bits.values():
+        for n, bit in self.bits.items():
             self.known |= bit
-        self.unmapped = any(not bit for bit in self.bits.values())
-        self.insurance = tuple(n for n in reversed(self.order)
+            if bit:
+                self.by_bit.setdefault(bit, []).append(n)
+        self.unmapped = bool(self.unknown)
+        self.insurance = tuple((n, self.durations[n], self.bits[n]) for n in reversed(self.order)
                                if self.bits[n] and self.durations[n] <= 1)
 
     @lru_cache(maxsize=384)
     def packed(self, mask, pad=True):
         # Unknown test IDs are always included.
-        selected = [n for n in self.order if not self.bits[n] or self.bits[n] & mask]
+        selected = self.numbers(mask)
         if not selected:
             return ()
         best_cost = None
@@ -92,6 +97,18 @@ class Scheduler:
             best_loads[j] += duration
         return tuple(map(tuple, best_bins))
 
+    def numbers(self, mask):
+        mask &= self.known
+        if mask.bit_count() >= len(self.order) // 8:
+            return [n for n in self.order if not self.bits[n] or self.bits[n] & mask]
+        selected = list(self.unknown)
+        while mask:
+            bit = mask & -mask
+            selected.extend(self.by_bit[bit])
+            mask ^= bit
+        selected.sort(key=self.rank.__getitem__)
+        return selected
+
     def schedule(self, mask, pad=True):
         return json.dumps(self.packed(mask, pad), separators=(",", ":"))
 
@@ -104,27 +121,29 @@ class Scheduler:
         )
 
     def insure(self, workers, nearby, passed):
-        """Place inexpensive related tests in existing slack."""
-        if not nearby or not workers:
+        """Place zero-cost and related 1 ms tests within the original peak."""
+        if not workers:
             return workers
         loads = [sum(self.durations[n] for n in group) for group in workers]
         limit = max(loads)
         selected = {n for group in workers for n in group}
-        groups = [group.copy() for group in workers]
-        added = 0
-        for n in self.insurance:
-            if n in selected or n in passed or not nearby & self.bits[n]:
+        groups = None
+        positive = 0
+        for n, duration, bit in self.insurance:
+            if n in selected or n in passed or duration and not nearby & bit:
                 continue
             seat = loads.index(min(loads))
-            new_load = loads[seat] + self.durations[n]
+            new_load = loads[seat] + duration
             if new_load > limit:
                 break
+            if groups is None:
+                groups = [group.copy() for group in workers]
             groups[seat].append(n)
             loads[seat] = new_load
-            added += 1
-            if added == 64:
+            positive += duration
+            if positive == 64:
                 break
-        return groups if added else workers
+        return workers if groups is None else groups
 
     def intersect(self, before, after, keep=0):
         old = self.packed(before)
@@ -243,15 +262,20 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         return mask
 
     def emit(path, plan, beginning, text=None, verified=False):
-        plan = risk.apply(None if verified else text, plan, {**queries.stats, **precision.stats} if text else None)
         recovered = None if verified else recovery.declarations(text)
+        skip_risk = False
         if recovered is not None:
             mask, replace = recovered
+            extra = set(scheduler.numbers(mask))
+            incoming = {n for group in plan for n in group}
+            # The recovery union restores every model drop. A short test
+            # missing from the original plan prevents reuse of its layout.
+            skip_risk = incoming <= extra and bool(extra.difference(incoming, long_cases.tests))
+        risk.stats = {}
+        if plan and not verified and not skip_risk:
+            plan = risk.apply(text, plan, {**queries.stats, **precision.stats} if text else None)
+        if recovered is not None:
             selected = {n for group in plan for n in group}
-            extra = {n for n, bit in scheduler.bits.items() if not bit or bit & mask}
-            # The import closure widens to cover definition side effects. A
-            # long test introduced by that closure still needs a trace route
-            # through at least one changed module.
             relevant = (extra if replace else selected | extra) & long_cases.tests.keys()
             retained = long_cases.recovery_scope(text, relevant) if relevant else relevant
             skipped = relevant - retained
@@ -259,8 +283,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 precision.stats["recovery_long_unobserved"] = sorted(skipped)
             selected = (extra if replace else selected | extra) - skipped
             plan = scheduler.repack(selected, plan)
-            plan = long_cases.recovery_replay(text, plan, base.resolve(), PatchWorkspace,
-                                             retained & (extra - selected), deadline)
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace
         if text:
