@@ -15,6 +15,7 @@ from pathlib import Path
 from struct import Struct
 
 from decision import overlay
+from cpu_budget import seconds
 from impact import split_diff, UnknownChange
 
 
@@ -132,12 +133,15 @@ class ExactTests:
         self.ctx = multiprocessing.get_context("fork")
         self.remaining = min(20.0, count * 0.4)
         self.collection_remaining = min(14.0, count * 0.35)
+        self.cleanup_remaining = min(5.0, count * 0.10)
+        self.attempted = set()
         self.deadline = time.monotonic() + min(130.0, count * 2.3 + 3.0)
         if len(os.listdir("/proc/self/task")) != 1 or "sqlglot" in sys.modules:
-            self.remaining = self.collection_remaining = 0.0
+            self.remaining = self.collection_remaining = self.cleanup_remaining = 0.0
 
-    def refine(self, patch, plan, workspace=None, short_only=False):
-        remaining = min(self.remaining, self.deadline - time.monotonic())
+    def refine(self, patch, plan, workspace=None, short_only=False, allowance=None):
+        available = self.remaining if allowance is None else allowance
+        remaining = min(available, self.deadline - time.monotonic())
         if remaining < 0.23 or not plan:
             return plan
         selected = {number for group in plan for number in group}
@@ -151,7 +155,7 @@ class ExactTests:
         except UnknownChange:
             return plan
         # A successful all-pass run can erase at least a worker's startup cost.
-        names = sorted(self.nodes[n] for n in selected)
+        names = tuple(sorted(self.nodes[n] for n in selected))
         cohort = not set(names) <= self.ready.keys()
         expected = sum(weights[n] for n in selected) / 1000
         if cohort:
@@ -165,7 +169,8 @@ class ExactTests:
         if expected > min(2.55, self.scheduler.cost(plan) / 1450):
             return plan
         cap = min(remaining, self.scheduler.cost(plan) / 1250, max(0.9, 1.45 * expected + 0.65))
-        result = self.run(edits, names, cap, collect=False, workspace=workspace, cohort=cohort)
+        result = self.run(edits, names, cap, collect=False, workspace=workspace, cohort=cohort,
+                          reserved=allowance is not None)
         if result is not None and all(name in self.numbers for name in result):
             passed = {self.numbers[name] for name in result}
             if passed <= selected:
@@ -173,6 +178,24 @@ class ExactTests:
                     return plan
                 return self.scheduler.repack(selected - passed, plan)
         return plan
+
+    def certify_small(self, patch, plan, certificate):
+        """Use a separate allowance for plans that could lose their only worker."""
+        if len(plan) != 1 or len(plan[0]) > 16 or self.cleanup_remaining < 0.30:
+            return plan
+        selected = plan[0]
+        if (sum(self.scheduler.durations[n] for n in selected) > 500
+                or self.fixture_cpu(selected) > 0.45):
+            return plan
+        names = tuple(sorted(self.nodes[n] for n in selected))
+        if names in self.attempted or not certificate(patch):
+            return plan
+        start = seconds()
+        try:
+            return self.refine(patch, plan, short_only=True,
+                               allowance=min(0.55, self.cleanup_remaining))
+        finally:
+            self.cleanup_remaining -= seconds() - start
 
     def fixture_cpu(self, selected):
         """Estimate a fresh class fixture even when a test itself is cheap."""
@@ -204,8 +227,9 @@ class ExactTests:
         failed = {n for n, node in self.nodes.items() if node not in present}
         return self.scheduler.repack(failed | {n for w in plan for n in w}, plan)
 
-    def run(self, edits, names, cap, collect, workspace=None, cohort=False):
-        cap = getattr(self, "cpu_limit", float)(cap)
+    def run(self, edits, names, cap, collect, workspace=None, cohort=False, reserved=False):
+        if not reserved:
+            cap = getattr(self, "cpu_limit", float)(cap)
         if cap < (0.5 if collect else 0.23):
             return None
         started = time.monotonic()
@@ -237,6 +261,8 @@ class ExactTests:
                     if available <= 0.04:
                         return None
                     run = self.ctx.Process(target=child, args=(send, root, names, collect, available, cohort))
+                    if not collect:
+                        self.attempted.add(names)
                     run.start()
                     send.close()
                     try:
@@ -258,6 +284,6 @@ class ExactTests:
         finally:
             if collect:
                 self.collection_remaining -= used() - baseline
-            else:
+            elif not reserved:
                 self.remaining -= used() - baseline
         return None

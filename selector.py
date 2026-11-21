@@ -212,6 +212,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             plan = long_cases.recovery_replay(text, plan, base.resolve(), PatchWorkspace, budget.cap, retained)
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace
+        if text:
+            checked = verify.certify_small(text, plan, precision.short_certificate)
+            if checked != plan:
+                precision.stats["small_clean_cohort"] = sum(map(len, plan))
+                plan = checked
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
@@ -238,6 +243,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         queries.stats = {}
         precision.stats = {}
         long_cases.stats = {}
+        verify.attempted.clear()
         before = mask = impact.full
         try:
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
