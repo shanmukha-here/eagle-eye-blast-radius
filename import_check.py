@@ -3,6 +3,7 @@
 import importlib
 import importlib.abc
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -29,10 +30,18 @@ class PatchedModule(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 if __name__ == "__main__":
-    root, path = sys.argv[1:]
+    root, path, *options = sys.argv[1:]
     module = path[:-3].replace("/", ".").removesuffix(".__init__")
     source = sys.stdin.buffer.read()
     filename = str(Path(root) / path)
+    called = set()
+
+    def trace(frame, event, argument):
+        if event == "call" and frame.f_code.co_filename == filename:
+            called.add(frame.f_code.co_name)
+
+    if options == ["--trace"]:
+        sys.setprofile(trace)
     sys.meta_path.insert(0, PatchedModule(module, filename, source))
     sys.path.insert(0, root)
     from sqlglot.dialects import Dialect
@@ -40,3 +49,6 @@ if __name__ == "__main__":
     importlib.import_module(module)
     # Force lazy registration and construction of inherited dialect classes.
     list(Dialect.classes.values())
+    if options == ["--trace"]:
+        sys.setprofile(None)
+        print(json.dumps(sorted(called)))

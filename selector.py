@@ -13,6 +13,7 @@ from incumbent.refine import Details as IncumbentDetails
 from incumbent.optimizer_probe import Replay as IncumbentReplay
 
 from cpu_budget import CpuBudget, seconds
+from cold_import import ColdImport
 from dependencies import Dependencies
 from module_topology import addition, hard_topology, opaque_format
 from decision import Execution, PatchWorkspace
@@ -45,15 +46,19 @@ class Scheduler:
         self.order = sorted(self.durations, key=lambda n: (-self.durations[n], n))
         bits = {name: 1 << i for i, name in enumerate(profile_ids)}
         self.bits = {t["number"]: bits.get(t["id"], 0) for t in tests}
+        self.known = 0
+        for bit in self.bits.values():
+            self.known |= bit
+        self.unmapped = any(not bit for bit in self.bits.values())
         self.insurance = tuple(n for n in reversed(self.order)
                                if self.bits[n] and self.durations[n] <= 1)
 
     @lru_cache(maxsize=384)
-    def schedule(self, mask, pad=True):
+    def packed(self, mask, pad=True):
         # Unknown test IDs are always included.
         selected = [n for n in self.order if not self.bits[n] or self.bits[n] & mask]
         if not selected:
-            return "[]"
+            return ()
         best_cost = None
         best_bins = best_loads = None
         total = sum(self.durations[n] for n in selected)
@@ -72,7 +77,7 @@ class Scheduler:
             if best_cost is None or cost < best_cost:
                 best_bins, best_loads, best_cost = bins, loads[:len(bins)], cost
         if not pad:
-            return json.dumps(best_bins, separators=(",", ":"))
+            return tuple(map(tuple, best_bins))
         # Add extra checks in the idle time of already occupied workers.
         chosen = set(selected)
         limit = max(best_loads)
@@ -85,8 +90,13 @@ class Scheduler:
                 break
             best_bins[j].append(n)
             best_loads[j] += duration
-        return json.dumps(best_bins, separators=(",", ":"))
+        return tuple(map(tuple, best_bins))
 
+    def schedule(self, mask, pad=True):
+        return json.dumps(self.packed(mask, pad), separators=(",", ":"))
+
+    def plan(self, mask):
+        return [list(group) for group in self.packed(mask, False)]
 
     def cost(self, workers):
         return 2000 * len(workers) + max(
@@ -117,8 +127,8 @@ class Scheduler:
         return groups if added else workers
 
     def intersect(self, before, after, keep=0):
-        old = json.loads(self.schedule(before))
-        new = json.loads(self.schedule(after))
+        old = self.packed(before)
+        new = self.packed(after)
         old_ids = {n for group in old for n in group}
         new_ids = {n for group in new for n in group}
         selected = (old_ids & new_ids) | {n for n in new_ids if self.bits[n] & keep}
@@ -135,14 +145,15 @@ class Scheduler:
         mask = 0
         for n in selected:
             mask |= self.bits[n]
-        packed = json.loads(self.schedule(mask, pad=False))
+        packed = self.packed(mask, False)
         variants = [packed]
         for groups in previous:
             filtered = [[n for n in group if n in selected] for group in groups]
             filtered = [group for group in filtered if group]
             if len({n for group in filtered for n in group}) == len(selected):
                 variants.append(filtered)
-        return min(variants, key=lambda groups: (self.cost(groups), len(groups)))
+        best = min(variants, key=lambda groups: (self.cost(groups), len(groups)))
+        return [list(group) for group in best] if best is packed else best
 
 
 def needs_parser_guard(impact, text):
@@ -179,6 +190,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     access = Dependencies(json.loads(zlib.decompress(map_path.with_name("access.z").read_bytes())))
     flow_map = json.loads(zlib.decompress(map_path.with_name("flow.z").read_bytes()))
     impact = Impact(base, profile, Details(data_map, profile["ids"], base, access))
+    cold_file = map_path.with_name("cold_import.index")
+    if cold_file.is_file():
+        impact.details.cold_import = ColdImport(cold_file, impact)
     impact.details.flow = Flow(flow_map)
     impact.details.observers = Observers(json.loads(zlib.decompress(map_path.with_name("observers.z").read_bytes())))
     impact.details.flow.none_safe = impact.details.observers.none_safe
@@ -298,13 +312,13 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 if "NUMERIC_ESCAPES" in text:
                     observed = precision.registry(text)
                     if observed is not None:
-                        plan = json.loads(scheduler.schedule(observed, pad=False))
+                        plan = scheduler.plan(observed)
                         emit(path, plan, beginning, verified=True)
                         continue
                 if changes_routing(impact, text):
                     observed = precision.registry(text)
                     plan = (fallback_plan if observed is None else
-                            json.loads(scheduler.schedule(observed, pad=False)))
+                            scheduler.plan(observed))
                     emit(path, plan, beginning)
                     continue
                 metadata = surface.select(text)
@@ -315,7 +329,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 recovered = recovery.declarations(text) if metadata is None else None
                 if recovered is not None and recovered[1]:
                     mask = recovered[0]
-                    plan = json.loads(scheduler.schedule(mask, pad=False))
+                    plan = scheduler.plan(mask)
                     with PatchWorkspace(base.resolve(), text) as workspace:
                         plan = long_cases.apply(text, plan, workspace, budget.cap, declaration=True)
                         if plan and all(scheduler.durations[n] < 3000 for w in plan for n in w):
@@ -331,7 +345,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 direct = observation.edit(text) if metadata is None else ("metadata", metadata)
                 local = precision.local_plan(text) if not direct else None
                 if local is not None:
-                    plan = json.loads(scheduler.schedule(local, pad=False))
+                    plan = scheduler.plan(local)
                     with PatchWorkspace(base.resolve(), text) as workspace:
                         plan = long_cases.apply(text, plan, workspace, budget.cap)
                         if plan and precision.short_certificate(text):
@@ -346,7 +360,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     continue
                 if direct is not None:
                     kind, observed = direct
-                    observed_plan = json.loads(scheduler.schedule(observed, pad=False))
+                    observed_plan = scheduler.plan(observed)
                     if kind == "syntax":
                         observed_plan = verify.collection(text, observed_plan)
                     if observed_plan is not None and (
@@ -362,7 +376,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     legacy = incumbent.details.replay
                     legacy.graph_changed = False
                     # An empty emitted plan is its own intersection.
-                    if scheduler.schedule(mask) != "[]":
+                    if scheduler.unmapped or mask & scheduler.known:
                         parser = impact.details.miniatures.tests.get("parser", 0)
                         if mask & parser and needs_parser_guard(impact, text):
                             keep = parser
@@ -379,7 +393,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                                 queries.stats["receiver_declaration"] = True
                         if declaration is not None:
                             before = mask = declaration | keep
-                            plan = json.loads(scheduler.schedule(mask, pad=False))
+                            plan = scheduler.plan(mask)
                     # Padding that did not change the initial schedule cost is
                     # not an observation. Replaying those IDs can load unrelated
                     # class fixtures and make a cheap cohort expensive.
@@ -410,6 +424,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         except UnicodeError:
             plan = fallback_plan
         emit(path, plan, beginning, risk_text)
+    if report and cold_file.is_file():
+        print(json.dumps(dict(cold_import_checks_skipped=impact.details.cold_import.shortcuts)), file=sys.stderr)
 
 
 if __name__ == "__main__":

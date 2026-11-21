@@ -256,6 +256,9 @@ class Details:
 
     @functools.lru_cache(maxsize=96)
     def import_valid(self, path, modified):
+        cold = getattr(self, "cold_import", None)
+        if cold is not None and cold(path, modified):
+            return True
         helper = Path(__file__).with_name("import_check.py")
         try:
             result = subprocess.run(

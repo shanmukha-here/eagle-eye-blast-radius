@@ -10,6 +10,8 @@ from receiver_edits import classes, plain_method
 
 
 FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
 def declaration_atoms(tree, owner="", enum=False):
     """Describe executed declaration syntax without comparing function bodies."""
     result = {}
@@ -45,8 +47,13 @@ class Recovery:
         self.impact = impact
         self.receivers = receivers
 
-    def observer_mask(self, path, before, after):
-        previous = declaration_atoms(before)
+    @lru_cache(maxsize=64)
+    def clean_atoms(self, path):
+        source = self.impact.base(path)[0]
+        return declaration_atoms(syntax(path, source)[0])
+
+    def observer_mask(self, path, after):
+        previous = self.clean_atoms(path)
         current = declaration_atoms(after)
         edits = [key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key)]
         broad = self.imports.mask(path) or self.impact.full
@@ -128,8 +135,7 @@ class Recovery:
                 modified = patched(source, hunks)
                 after, (updated, new_scopes), _ = syntax(path, modified)
                 if updated != outer or scopes.keys() != new_scopes.keys():
-                    before = syntax(path, source)[0]
-                    declarations.append(self.observer_mask(path, before, after))
+                    declarations.append(self.observer_mask(path, after))
                 else:
                     mask = 0
                     calls = self.impact.files.get(path, {})
