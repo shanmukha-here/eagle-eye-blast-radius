@@ -154,6 +154,15 @@ def structure(tree):
     return ast.dump(tree), functions
 
 
+def bypasses_executor_result(old, new):
+    previous = [n for n in ast.walk(old) if isinstance(n, ast.Return)]
+    current = [n for n in ast.walk(new) if isinstance(n, ast.Return)]
+    return len(previous) == len(current) and any(
+        isinstance(a.value, ast.Call) and isinstance(b.value, ast.Constant) and b.value.value is None
+        for a, b in zip(previous, current)
+    )
+
+
 class Impact:
     def __init__(self, root, profile, details=None):
         self.details = details
@@ -298,12 +307,7 @@ class Impact:
         # that bypasses a result constructor can disrupt their shared lifetime.
         if miniature and path.startswith("sqlglot/executor/"):
             for key in affected:
-                previous = [n for n in ast.walk(scopes[key][3]) if isinstance(n, ast.Return)]
-                current = [n for n in ast.walk(new_scopes[key][3]) if isinstance(n, ast.Return)]
-                if len(previous) == len(current) and any(
-                    isinstance(a.value, ast.Call) and isinstance(b.value, ast.Constant)
-                    and b.value.value is None for a, b in zip(previous, current)
-                ):
+                if bypasses_executor_result(scopes[key][3], new_scopes[key][3]):
                     selected |= miniature.tests.get("parser", 0)
         return selected
 
