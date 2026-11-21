@@ -49,12 +49,6 @@ def member_change(before, after):
     return None
 
 
-def enum_class(owner):
-    return any((base.id if isinstance(base, ast.Name) else
-                base.attr if isinstance(base, ast.Attribute) else "").endswith("Enum")
-               for base in owner.bases)
-
-
 def slot_declarations(tree):
     def assignments():
         for node in ast.walk(tree):
@@ -164,15 +158,10 @@ class RiskFeatures:
                     if guard_bindings and composite and ("__slots__" in source or "__slots__" in new):
                         if slot_declarations(old_ast) != slot_declarations(after_ast):
                             return None
-                    defaults = default_changes(old_ast, after_ast) if not member else ()
                     if member:
-                        if guard_bindings and enum_class(dict(classes(old_ast.body))[member[0]]):
-                            return None
                         families.add("member")
                         words.update(part.casefold() for part in (*member[0].split("."), member[1]))
-                    elif defaults or changed_fields(source, new):
-                        if guard_bindings and composite and defaults:
-                            return None
+                    elif default_changes(old_ast, after_ast) or changed_fields(source, new):
                         families.add("scalar declaration")
                     elif layout_only(source, new):
                         families.add("layout")

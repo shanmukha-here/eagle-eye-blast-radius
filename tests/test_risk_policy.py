@@ -3,7 +3,7 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
-from risk_features import RiskFeatures, enum_class, member_change, slot_declarations
+from risk_features import RiskFeatures, member_change, slot_declarations
 from risk_model import DOUBLE, FORM_MAGIC, FORM_POLICY, HEADER, MAGIC, NODE, ROOT, RiskModel
 from risk_policy import MISS_MS, charge, choose, hazard
 from selector import Scheduler
@@ -66,11 +66,7 @@ def test_mmap_models_share_predictions_with_form_specific_pricing(tmp_path):
     assert model.probability((0,), scale) == 0.1
 
 
-def test_binding_guard_detects_enum_and_slot_rewrites():
-    tagged = ast.parse("class State(enum.StrEnum):\n    ACTIVE = 'active'\n").body[0]
-    ordinary = ast.parse("class State(Parent):\n    ACTIVE = 'active'\n").body[0]
-    assert enum_class(tagged)
-    assert not enum_class(ordinary)
+def test_binding_guard_detects_slot_rewrites():
     original_slots = ast.parse("class State:\n    __slots__ = ('active',)\n")
     revised_slots = ast.parse("class State:\n    __slots__ = ('changed',)\n")
     assert slot_declarations(original_slots) != slot_declarations(revised_slots)
