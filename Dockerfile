@@ -42,11 +42,11 @@ RUN mkdir /precision-trace \
     && PYTHONPATH=/app python -B /precision-tools/build_precision_index.py /precision-trace /app /base \
     && rm -r /precision-trace
 COPY precision.py precision_body.py ./
-COPY long_cases.py ./
+COPY long_cases.py narrow.py cpu_budget.py ./
 COPY tools/build_long_cases.py /build_long_cases.py
 RUN cd /base \
     && PYTHONHASHSEED=0 PYTHONPATH=/app:/base python -B /build_long_cases.py /base /app
-COPY decision.py selector.py narrow.py fixture_reads.json long_gate.py parser_signal.py cpu_budget.py surface.py definition_metadata.py ./
+COPY decision.py selector.py fixture_reads.json long_gate.py parser_signal.py surface.py definition_metadata.py ./
 COPY observation_index.py value_observations.py values.z values_eq.z ready_imports.json fixture_inputs.json ./
 COPY tools/build_observation_file.py /build_observation_file.py
 RUN PYTHONPATH=/app python /build_observation_file.py /app
