@@ -45,6 +45,8 @@ class Scheduler:
         self.order = sorted(self.durations, key=lambda n: (-self.durations[n], n))
         bits = {name: 1 << i for i, name in enumerate(profile_ids)}
         self.bits = {t["number"]: bits.get(t["id"], 0) for t in tests}
+        self.insurance = tuple(n for n in reversed(self.order)
+                               if self.bits[n] and self.durations[n] <= 1)
 
     @lru_cache(maxsize=384)
     def schedule(self, mask, pad=True):
@@ -90,6 +92,29 @@ class Scheduler:
         return 2000 * len(workers) + max(
             (sum(self.durations[n] for n in worker) for worker in workers), default=0
         )
+
+    def insure(self, workers, nearby, passed):
+        """Place inexpensive related tests in existing slack."""
+        if not nearby or not workers:
+            return workers
+        loads = [sum(self.durations[n] for n in group) for group in workers]
+        limit = max(loads)
+        selected = {n for group in workers for n in group}
+        groups = [group.copy() for group in workers]
+        added = 0
+        for n in self.insurance:
+            if n in selected or n in passed or not nearby & self.bits[n]:
+                continue
+            seat = loads.index(min(loads))
+            new_load = loads[seat] + self.durations[n]
+            if new_load > limit:
+                break
+            groups[seat].append(n)
+            loads[seat] = new_load
+            added += 1
+            if added == 64:
+                break
+        return groups if added else workers
 
     def intersect(self, before, after, keep=0):
         old = json.loads(self.schedule(before))
@@ -192,6 +217,17 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     fallback_plan = scheduler.intersect(impact.full, impact.full)
     report = os.environ.get("BLAST_ASSERTION_REPORT") == "1"
 
+    def insurance_scope(text):
+        mask = 0
+        try:
+            for path in split_diff(text):
+                mask |= (impact.visitors.get(path, 0) | impact.details.imports.get(path, 0) |
+                         impact.details.dialects.get(path, 0) | impact.details.test_files.get(path, 0) |
+                         impact.files.get(path, {}).get(0, 0))
+        except UnknownChange:
+            pass
+        return mask
+
     def emit(path, plan, beginning, text=None, verified=False):
         plan = risk.apply(None if verified else text, plan, {**queries.stats, **precision.stats} if text else None)
         recovered = None if verified else recovery.declarations(text)
@@ -217,6 +253,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             if checked != plan:
                 precision.stats["small_clean_cohort"] = sum(map(len, plan))
                 plan = checked
+            if plan:
+                insured = scheduler.insure(plan, insurance_scope(text), verify.passed)
+                if insured is not plan:
+                    precision.stats["insurance_tests"] = sum(map(len, insured)) - sum(map(len, plan))
+                    plan = insured
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
@@ -244,6 +285,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         precision.stats = {}
         long_cases.stats = {}
         verify.attempted.clear()
+        verify.passed.clear()
         before = mask = impact.full
         try:
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:

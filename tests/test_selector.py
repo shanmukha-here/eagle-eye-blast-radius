@@ -56,6 +56,17 @@ class SchedulingTests(unittest.TestCase):
         schedule = json.loads(Scheduler(tests, ["first", "second"]).schedule(1))
         self.assertEqual({t for worker in schedule for t in worker}, {0, 3})
 
+    def test_insurance_uses_slack_and_preserves_empty_plans(self):
+        tests = [{"number": n, "id": str(n), "seconds": duration}
+                 for n, duration in enumerate((0.010, 0.009, 0.000, 0.001, 0.001, 0.000))]
+        scheduler = Scheduler(tests, [str(n) for n in range(len(tests))])
+        original = [[0], [1]]
+        insured = scheduler.insure(original, (1 << 5) - 1, {4})
+        self.assertEqual(insured, [[0], [1, 2, 3]])
+        self.assertEqual(scheduler.cost(insured), scheduler.cost(original))
+        self.assertEqual(original, [[0], [1]])
+        self.assertEqual(scheduler.insure([], 63, set()), [])
+
 
 class StartupTests(unittest.TestCase):
     def test_worker_is_added_only_for_a_strict_cost_improvement(self):

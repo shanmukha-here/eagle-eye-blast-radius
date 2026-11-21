@@ -135,6 +135,7 @@ class ExactTests:
         self.collection_remaining = min(14.0, count * 0.35)
         self.cleanup_remaining = min(5.0, count * 0.10)
         self.attempted = set()
+        self.passed = set()
         self.deadline = time.monotonic() + min(130.0, count * 2.3 + 3.0)
         if len(os.listdir("/proc/self/task")) != 1 or "sqlglot" in sys.modules:
             self.remaining = self.collection_remaining = self.cleanup_remaining = 0.0
@@ -174,6 +175,7 @@ class ExactTests:
         if result is not None and all(name in self.numbers for name in result):
             passed = {self.numbers[name] for name in result}
             if passed <= selected:
+                self.passed.update(passed)
                 if short_only and passed != selected:
                     return plan
                 return self.scheduler.repack(selected - passed, plan)
