@@ -51,3 +51,5 @@ tools/*
 !query_values.z
 !values_eq.z
 !fixture_inputs.json
+
+!probe.py
