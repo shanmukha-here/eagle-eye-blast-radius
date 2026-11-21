@@ -2,7 +2,6 @@
 
 import ast
 import configparser
-import json
 from pathlib import Path
 import re
 import sys
@@ -11,6 +10,7 @@ import tomllib
 from definition_metadata import equivalent
 from dependencies import name_bits
 from impact import UnknownChange, patched, split_diff, syntax
+from observation_file import ObservationFile
 
 PROJECT_TEXT = {"authors", "classifiers", "description", "readme", "urls"}
 
@@ -52,27 +52,14 @@ class Surface:
     def __init__(self, impact, directory, references):
         self.impact = impact
         self.references = references
-        index = directory / "project_readers.json"
-        data = json.loads(index.read_bytes()) if index.is_file() else {}
-        self.reads = data.get("files", {})
-        self.discovery = data.get("directories", ())
-        self.introspection = 0
-        for path, numbers in data.get("introspection", {}).items():
-            if path not in impact.details.lines:
-                self.introspection |= self.consumers([path])
-                continue
-            lines = impact.details.lines[path]
-            self.introspection |= impact.files.get(path, {}).get(0, 0)
-            for number in numbers:
-                self.introspection |= lines.get(number, 0)
+        filename = directory / "project_readers.index"
+        self.index = ObservationFile(filename) if filename.is_file() else None
+        self.discovery = self.mask("discover") or 0
+        self.introspection = self.mask("introspect") or 0
 
-    def consumers(self, paths):
-        selected = 0
-        for path in paths:
-            selected |= (self.impact.details.imports.get(path, 0) |
-                         self.impact.details.test_files.get(path, 0) |
-                         self.impact.visitors.get(path, 0))
-        return selected
+    def mask(self, name):
+        rows = self.index.get(name) if self.index is not None else ()
+        return rows[0][1] if rows else None
 
     def module_operation(self, text):
         info = filesystem_change(text, self.impact.root)
@@ -83,7 +70,7 @@ class Surface:
         access = getattr(details, "access", None)
         if not access:
             return None
-        observed = details.flow.opaque | self.consumers(self.discovery)
+        observed = details.flow.opaque | self.discovery
         if old:
             if not (old in self.impact.files or old in details.lines or old in details.imports):
                 return None
@@ -106,21 +93,20 @@ class Surface:
         return observed | access.seen.get("dir:?", 0) | access.seen.get("dir:sqlglot", 0)
 
     def select(self, text):
-        if not self.reads or text.count("\ndiff --git ") or not text.startswith("diff --git "):
+        if self.index is None or text.count("\ndiff --git ") or not text.startswith("diff --git "):
             return None
         try:
             if "\nrename from " in text or "\nnew file mode " in text or "\ndeleted file mode " in text:
                 return self.module_operation(text)
             edits = split_diff(text)
             path, = edits
-            if path not in self.reads:
+            projected = self.mask("file:" + path)
+            if projected is None:
                 return self.definition(path, edits[path], text)
             original = (self.impact.root / path).read_text()
             modified = patched(original, edits[path])
             if path in ("setup.cfg", "pyproject.toml") and not build_configuration(path, original, modified):
                 return None
-            projected = self.impact.details.flow.opaque
-            projected |= self.consumers(self.reads[path])
             if self.impact.details.access:
                 basename = path.rpartition("/")[2]
                 projected |= self.impact.details.access.seen.get("path:" + basename, 0)

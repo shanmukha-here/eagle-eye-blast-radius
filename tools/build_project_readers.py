@@ -3,9 +3,17 @@ import ast
 import json
 from pathlib import Path
 import sys
+import zlib
+
+from impact import Impact
+from observation_file import build
+from refine import Details
+
+def load(path):
+    return json.loads(zlib.decompress(path.read_bytes()))
 
 
-def main(base, target):
+def main(base, directory):
     paths = set()
     for glob in ("*.md", "docs/**/*.md"):
         paths.update(path.relative_to(base).as_posix() for path in base.glob(glob) if path.is_file())
@@ -48,9 +56,30 @@ def main(base, target):
                     path in metadata and setup_consumers.intersection(identifiers)
                 ):
                     readers.add(name)
-    result = {"files": {p: sorted(readers) for p, readers in index.items()},
-              "directories": sorted(discovery), "introspection": introspection}
-    target.write_text(json.dumps(result, sort_keys=True))
+    profile = load(directory / "base.z")
+    details = Details(load(directory / "details.z"), profile["ids"], base)
+    impact = Impact(base, profile, details)
+
+    def readers(paths):
+        mask = 0
+        for path in paths:
+            mask |= (details.imports.get(path, 0) | details.test_files.get(path, 0)
+                     | impact.visitors.get(path, 0))
+        return mask
+
+    observed = 0
+    for path, numbers in introspection.items():
+        if path not in details.lines:
+            observed |= readers([path])
+            continue
+        observed |= impact.files.get(path, {}).get(0, 0)
+        lines = details.lines[path]
+        for number in numbers:
+            observed |= lines.get(number, 0)
+    records = {"file:" + p: ((None, readers(paths)),) for p, paths in index.items()}
+    records["discover"] = ((None, readers(discovery)),)
+    records["introspect"] = ((None, observed),)
+    build(directory / "project_readers.index", records)
 
 
 if __name__ == "__main__":
