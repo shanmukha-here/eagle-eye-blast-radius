@@ -57,3 +57,5 @@ tools/*
 
 !surface.py
 !tools/build_project_readers.py
+
+!definition_metadata.py

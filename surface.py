@@ -8,8 +8,9 @@ import re
 import sys
 import tomllib
 
+from definition_metadata import equivalent
 from dependencies import name_bits
-from impact import UnknownChange, patched, split_diff
+from impact import UnknownChange, patched, split_diff, syntax
 
 PROJECT_TEXT = {"authors", "classifiers", "description", "readme", "urls"}
 
@@ -42,9 +43,9 @@ def build_configuration(path, before, after):
     if not isinstance(old_tools, dict) or not isinstance(new_tools, dict):
         return False
     # Keep every non-lint tool configuration the same.
-    return previous == revised and {
-        key: value for key, value in old_tools.items() if key != "ruff"
-    } == {key: value for key, value in new_tools.items() if key != "ruff"}
+    preserved = old_tools.keys() | {"pytest", "setuptools", "setuptools_scm", "uv"}
+    return previous == revised and all(old_tools.get(key) == new_tools.get(key)
+                                       for key in preserved if key != "ruff")
 
 
 class Surface:
@@ -54,6 +55,15 @@ class Surface:
         data = json.loads(index.read_bytes()) if index.is_file() else {}
         self.reads = data.get("files", {})
         self.discovery = data.get("directories", ())
+        self.introspection = 0
+        for path, numbers in data.get("introspection", {}).items():
+            if path not in impact.details.lines:
+                self.introspection |= self.consumers([path])
+                continue
+            lines = impact.details.lines[path]
+            self.introspection |= impact.files.get(path, {}).get(0, 0)
+            for number in numbers:
+                self.introspection |= lines.get(number, 0)
 
     def consumers(self, paths):
         selected = 0
@@ -102,7 +112,7 @@ class Surface:
             edits = split_diff(text)
             path, = edits
             if path not in self.reads:
-                return None
+                return self.definition(path, edits[path], text)
             original = (self.impact.root / path).read_text()
             modified = patched(original, edits[path])
             if path in ("setup.cfg", "pyproject.toml") and not build_configuration(path, original, modified):
@@ -113,8 +123,30 @@ class Surface:
                 basename = path.rpartition("/")[2]
                 projected |= self.impact.details.access.seen.get("path:" + basename, 0)
             return projected
-        except (UnknownChange, OSError, UnicodeError, ValueError, SyntaxError):
+        except (UnknownChange, OSError, UnicodeError, ValueError, SyntaxError, RecursionError):
             return None
+
+    def definition(self, path, hunks, raw):
+        if not path.startswith("sqlglot/") or not path.endswith(".py"):
+            return None
+        # Guard the additional AST walk on the changed lines alone.
+        signs = [line[1:].lstrip() for line in raw.splitlines()
+                 if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+        if not any(line.startswith(("'", '"', "@", "from ")) or " -> " in line for line in signs):
+            return None
+        original = (self.impact.root / path).read_text()
+        modified = patched(original, hunks)
+        old, (outer, scopes), _ = syntax(path, original)
+        new, (new_outer, new_scopes), _ = syntax(path, modified)
+        if outer == new_outer and scopes.keys() == new_scopes.keys() and all(
+            scopes[key][2] == new_scopes[key][2] for key in scopes
+        ):
+            return None
+        access = self.impact.details.access
+        if not equivalent(path, original, modified, old, new, access.names if access else b""):
+            return None
+        return (self.impact.details.positions | self.impact.details.flow.opaque |
+                self.impact.files.get(path, {}).get(0, 0) | self.introspection)
 
 
 def pure_module(source):

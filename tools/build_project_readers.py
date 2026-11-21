@@ -15,6 +15,10 @@ def main(base, target):
     setup_consumers = {"build_ext", "Distribution", "setuptools", "setuptools_scm",
                        "find_config_files", "parse_config_files"}
     discovery = set()
+    introspection = {}
+    metadata_reads = {"__annotations__", "__doc__", "co_consts", "get_annotations",
+                      "get_type_hints", "getdoc", "getcomments", "getsource",
+                      "signature", "DocTestSuite", "DocTestFinder"}
     for directory in ("sqlglot", "tests"):
         for source in sorted((base / directory).rglob("*.py")):
             name = source.relative_to(base).as_posix()
@@ -31,13 +35,21 @@ def main(base, target):
             )
             if identifiers.intersection({"walk_packages", "iter_modules"}):
                 discovery.add(name)
+            lines = sorted({n.lineno for n in nodes if hasattr(n, "lineno") and (
+                isinstance(n, ast.Name) and n.id in metadata_reads
+                or isinstance(n, ast.Attribute) and n.attr in metadata_reads
+                or isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in metadata_reads
+            )})
+            if lines:
+                introspection[name] = lines
             for path, readers in index.items():
                 basename = path.rpartition("/")[2]
                 if any(basename in value for value in strings) or (
                     path in metadata and setup_consumers.intersection(identifiers)
                 ):
                     readers.add(name)
-    result = {"files": {p: sorted(readers) for p, readers in index.items()}, "directories": sorted(discovery)}
+    result = {"files": {p: sorted(readers) for p, readers in index.items()},
+              "directories": sorted(discovery), "introspection": introspection}
     target.write_text(json.dumps(result, sort_keys=True))
 
 
