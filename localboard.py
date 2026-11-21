@@ -246,6 +246,7 @@ def evaluate(config, confdir, archive, work, sha):
         stat = Path("/sys/fs/cgroup") / parent / "cpu.stat"
         for label, (directory, answers, tests) in boards.items():
             trial_totals = []
+            wall_limit = 180 if len(answers) <= 40 else 270
             for trial in range(1, 4):
                 name = prefix + "-entry"
                 mounts = [
@@ -257,7 +258,7 @@ def evaluate(config, confdir, archive, work, sha):
                 with docker_run_lock(config), container(name, flags + mounts + [iid]):
                     start = cpu_usage(stat)
                     t = time.monotonic()
-                    stdout = limited_output(name, 180, 2_000_000)
+                    stdout = limited_output(name, wall_limit, 2_000_000)
                     elapsed = time.monotonic() - t
                     used = cpu_usage(stat) - start
                     state = json.loads(
