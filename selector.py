@@ -1,6 +1,7 @@
 """Schedule numbered tests using the impact map of the pinned source tree."""
 import json
 import math
+import os
 import sys
 import time
 import zlib
@@ -13,6 +14,8 @@ from incumbent.optimizer_probe import Replay as IncumbentReplay
 
 from cpu_budget import CpuBudget, seconds
 from dependencies import Dependencies
+from assertion_replay import AssertionReplay
+from module_topology import addition, hard_topology
 from decision import Execution, PatchWorkspace
 from flow import Flow
 from observed import Observers
@@ -202,6 +205,18 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     narrow = Narrow(impact, map_path.parent)
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
+    assertions = AssertionReplay(impact, scheduler, tests, map_path.with_name("assertions.index"), budget.cap)
+    report = os.environ.get("BLAST_ASSERTION_REPORT") == "1"
+
+    def emit(path, plan, beginning):
+        if report:
+            metrics = dict(commit=path.stem, cpu=seconds() - beginning,
+                           startup=2 * len(plan),
+                           busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
+                           **assertions.stats)
+            print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
+        workers = json.dumps(plan, separators=(",", ":"))
+        sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
     observation = ObservationIndex(impact, map_path.with_name("values.z"))
     surface = Surface(impact, map_path.parent, observation.references)
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
@@ -215,13 +230,21 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
     for index, path in enumerate(patches):
         budget.remaining_patches = len(patches) - index
+        beginning = seconds() if report else 0
+        assertions.stats = {}
         before = mask = impact.full
         try:
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
                 plan = scheduler.intersect(before, mask)
             else:
                 text = path.read_text("utf-8")
+                if hard_topology(text):
+                    emit(path, scheduler.intersect(before, mask), beginning)
+                    continue
                 metadata = surface.select(text)
+                if addition(text) and metadata is None:
+                    emit(path, scheduler.intersect(before, mask), beginning)
+                    continue
                 direct = observation.edit(text) if metadata is None else ("metadata", metadata)
                 if direct is not None:
                     kind, observed = direct
@@ -231,10 +254,10 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     if observed_plan is not None and (
                         kind in ("default", "attribute", "import", "metadata", "syntax") or scheduler.cost(observed_plan) <= 3000
                     ):
-                        plan = references.apply(text, observed_plan)
+                        plan = assertions.refine(text, observed_plan)
+                        plan = references.apply(text, plan)
                         plan = verify.refine(text, plan)
-                        workers = json.dumps(plan, separators=(",", ":"))
-                        sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
+                        emit(path, plan, beginning)
                         continue
                 with PatchWorkspace(base.resolve(), text) as workspace:
                     mask = execution.refine(text, narrow.select(text, impact.select(text)), workspace)
@@ -268,11 +291,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         if unexecuted_return(impact, text, parser_bit):
                             retained = {n for group in plan for n in group if n != parser_id}
                             plan = scheduler.repack(retained, plan)
+                    plan = assertions.refine(text, plan, workspace)
                     plan = verify.refine(text, plan)
         except UnicodeError:
             plan = scheduler.intersect(impact.full, impact.full)
-        workers = json.dumps(plan, separators=(",", ":"))
-        sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
+        emit(path, plan, beginning)
 
 
 if __name__ == "__main__":

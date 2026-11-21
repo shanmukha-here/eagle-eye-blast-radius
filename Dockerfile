@@ -9,6 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 RUN python -m pip install --disable-pip-version-check --no-cache-dir --no-deps --index-url https://pypi.org/simple --only-binary=:all: python-dateutil==4.0.0 tzdata==2026.6
 COPY --from=source /src/sqlglot /base/sqlglot
 COPY --from=source /src/tests /base/tests
+COPY --from=source /src/sqlglotc /base/sqlglotc
 COPY --from=source /src/*.md /src/pyproject.toml /src/setup.cfg /base/
 RUN python -m compileall -q /base/sqlglot /base/tests
 WORKDIR /app
@@ -28,7 +29,15 @@ RUN PYTHONPATH=/app python /build_project_readers.py /base /app
 COPY observation_index.py value_observations.py values.z values_eq.z ready_imports.json fixture_inputs.json ./
 COPY tools/build_observation_file.py /build_observation_file.py
 RUN PYTHONPATH=/app python /build_observation_file.py /app
-COPY exact_tests.py ./
+COPY exact_tests.py assertion_index.py assertion_replay.py assertion_units.py module_topology.py ./
+COPY tools/trace_assertions.py tools/build_assertion_index.py /assertion-tools/
+RUN mkdir /assertion-trace \
+    && cd /base \
+    && PYTHONHASHSEED=0 PYTHON_CPU_COUNT=4 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+       PYTHONPATH=/app:/assertion-tools ASSERTION_TRACE=/assertion-trace \
+       python -B -m pytest -q --assert=plain -p no:cacheprovider -p trace_assertions tests \
+    && PYTHONPATH=/app python /assertion-tools/build_assertion_index.py /assertion-trace /app/assertions.index \
+    && rm -r /assertion-trace
 COPY tools/build_unit_ready.py /build_unit_ready.py
 RUN SKIP_INTEGRATION=0 PYTHONPATH=/app:/base python /build_unit_ready.py /app/base.z /app/unit_ready.json /base
 COPY reference_replay.py reference_reads.json ./

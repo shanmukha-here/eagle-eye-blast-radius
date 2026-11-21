@@ -61,3 +61,10 @@ tools/*
 !definition_metadata.py
 
 !cpu_budget.py
+
+!assertion_index.py
+!assertion_replay.py
+!assertion_units.py
+!module_topology.py
+!tools/trace_assertions.py
+!tools/build_assertion_index.py
