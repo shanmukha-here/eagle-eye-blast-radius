@@ -15,6 +15,7 @@ from types import CodeType
 from checkpoint import digest, table_digest
 from import_check import PatchedModule
 from refine import regions
+from value_observations import input_mask, key as value_key, replacements
 
 
 def local_edit(old, new):
@@ -157,10 +158,31 @@ class Replay:
         self.line_ids = lines["locations"]
         self.line_pool = lines["pool"]
         self.cases = index["cases"]
+        self.values = json.loads(zlib.decompress((directory / "query_values.z").read_bytes()))
         self.uses = index["uses"]
         self.root = Path(root).resolve()
         self.directory = directory
         self.reserved_seconds = 0.0
+
+    def case_mask(self, location, path, old, new):
+        changes = replacements(old, new, within_function=True)
+        if not changes:
+            return None
+        candidates = 0
+        for before, after, names, predicate in changes:
+            source = self.values.get(value_key(path, before))
+            index = self.line_ids.get(f"{location}@{before.lineno}")
+            if source is None or index is None:
+                return None
+            opt, whole = self.line_pool[index]
+            if opt != 0 or whole < 0:
+                return None
+            observed, changed = input_mask(
+                [(None if row is None else [v for _, v in row], bits) for row, bits in source],
+                names, before, after, predicate,
+            )
+            candidates |= changed | (whole & ~observed)
+        return [i for i in range(len(self.cases)) if candidates & (1 << i)]
 
     def select(self, path, source, key, old, new, mask, scheduler, same_bindings=False):
         if (not mask & self.test or scheduler is None
@@ -188,6 +210,12 @@ class Replay:
         opt, whole = cases
         execution_only = (path == "sqlglot/executor/python.py" and key[0] == "PythonExecutor"
                           and not opt)
+        if same_bindings and not opt and path.startswith("sqlglot/executor/"):
+            focused = self.case_mask(location, path, old[3], new[3])
+            if focused is not None:
+                if not focused:
+                    return reduced
+                whole, execution_only = focused, True
         fuse = False
         if execution_only and qualified == "PythonExecutor.hash_join":
             pair_line = suppressed_join_bucket(old[3], new[3])

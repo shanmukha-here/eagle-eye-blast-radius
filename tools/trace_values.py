@@ -21,6 +21,8 @@ import pytest
 from value_observations import EXPRESSION_FIELDS, SCALARS, inputs, key
 
 ROOT = str(Path.cwd()) + "/"
+QUERY_INPUTS = os.getenv("TRACE_QUERY_INPUTS") == "1"
+TRACKED = ROOT + ("sqlglot/executor/" if QUERY_INPUTS else "sqlglot/")
 original_load = SourceFileLoader.get_code
 original_exec = SourceFileLoader.exec_module
 original_submit = ProcessPoolExecutor.submit
@@ -158,7 +160,7 @@ def entered(code, offset):
 
 def get_code(loader, fullname):
     filename = loader.get_filename(fullname)
-    if not filename.startswith(ROOT + "sqlglot/"):
+    if not filename.startswith(TRACKED):
         return original_load(loader, fullname)
     tree = ast.parse(Path(filename).read_bytes(), filename)
     tree = Trace(filename[len(ROOT):]).visit(tree)
@@ -210,6 +212,11 @@ def work(owner, fn, args, kwargs):
         child_exit_registered = True
         Finalize(None, save, exitpriority=1)
     current = owner
+    if (QUERY_INPUTS and fn.__module__ == "tests.test_executor"
+            and fn.__name__ == "mp_execute" and args[1].get("execute")):
+        from checkpoint import digest
+
+        current = "case:" + digest(args[0])
     return fn(*args, **kwargs)
 
 

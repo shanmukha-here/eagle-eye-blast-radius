@@ -63,7 +63,7 @@ def fingerprint(node):
     return ast.dump(node) if isinstance(node, ast.AST) else node
 
 
-def replacements(old, new):
+def replacements(old, new, within_function=False):
     """Match scalar expression edits while requiring an identical surrounding tree."""
     changes = []
 
@@ -74,7 +74,7 @@ def replacements(old, new):
             owner = a
         if isinstance(a, ast.AST):
             field = EXPRESSION_FIELDS.get(type(a))
-            if field and isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if field and (owner is True or isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef))):
                 before, after = getattr(a, field), getattr(b, field)
                 if fingerprint(before) != fingerprint(after):
                     names = inputs(before)
@@ -88,7 +88,7 @@ def replacements(old, new):
             return len(a) == len(b) and all(compare(x, y, owner) for x, y in zip(a, b))
         return a == b
 
-    return changes if compare(old, new) else []
+    return changes if compare(old, new, within_function) else []
 
 
 def input_mask(records, names, before, after, predicate):
