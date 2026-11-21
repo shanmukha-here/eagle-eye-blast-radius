@@ -13,6 +13,53 @@ def load(path):
     return json.loads(zlib.decompress(path.read_bytes()))
 
 
+def key(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def standard_super_hook(node):
+    return (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name) and node.value.func.id == "super"
+            and not node.value.args and not node.value.keywords)
+
+
+def class_doc(node, parents):
+    """Recognize doc access on the class supplied by Python's subclass hook."""
+    parent = parents.get(node)
+    if isinstance(node, ast.Attribute):
+        receiver = node.value
+    elif (isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name)
+          and parent.func.id in {"getattr", "setattr"} and len(parent.args) >= 2 and parent.args[1] is node):
+        receiver = parent.args[0]
+    else:
+        return False
+    if not isinstance(receiver, ast.Name):
+        return False
+    current = parent
+    while current is not None and not isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        current = parents.get(current)
+    if not (isinstance(current, ast.FunctionDef) and current.name == "__init_subclass__"
+            and isinstance(parents.get(current), ast.ClassDef)):
+        return False
+    args = current.args.posonlyargs + current.args.args
+    if not args or args[0].arg != receiver.id:
+        return False
+    if any(not isinstance(item, ast.Name) or item.id != "classmethod" for item in current.decorator_list):
+        return False
+    return not any(
+        isinstance(item, ast.Name) and item.id == receiver.id and isinstance(item.ctx, (ast.Store, ast.Del))
+        or isinstance(item, (ast.Nonlocal, ast.Global)) and receiver.id in item.names
+        or isinstance(item, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and item.name == receiver.id
+        for item in ast.walk(current)
+    )
+
+
 def main(base, directory):
     paths = set()
     for glob in ("*.md", "docs/**/*.md"):
@@ -25,6 +72,9 @@ def main(base, directory):
     discovery = set()
     introspection = {}
     source_introspection = {}
+    doc_introspection = {}
+    class_doc_introspection = {}
+    manual_subclass_hook = False
     metadata_reads = {"__annotations__", "__doc__", "co_consts", "get_annotations",
                       "get_type_hints", "getdoc", "getcomments", "getsource",
                       "signature", "DocTestSuite", "DocTestFinder"}
@@ -32,6 +82,7 @@ def main(base, directory):
                     "findsource", "getcomments", "getframeinfo", "getsource", "getsourcelines", "linecache",
                     "settrace", "f_lineno", "f_trace", "tb_lineno", "extract_stack", "format_stack",
                     "get_instructions", "disassemble"}
+    doc_reads = {"__doc__", "getdoc", "DocTestSuite", "DocTestFinder", "find_doctest"}
     for source_dir in ("sqlglot", "tests"):
         for source in sorted((base / source_dir).rglob("*.py")):
             name = source.relative_to(base).as_posix()
@@ -62,6 +113,23 @@ def main(base, directory):
             )})
             if physical:
                 source_introspection[name] = physical
+            parents = {child: node for node in nodes for child in ast.iter_child_nodes(node)}
+            builtins_used = {"getattr", "setattr", "super"}
+            shadowed = any(
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in builtins_used
+                or isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) and node.id in builtins_used
+                or isinstance(node, ast.arg) and node.arg in builtins_used
+                or isinstance(node, ast.alias) and (node.asname or node.name.split(".", 1)[0]) in builtins_used
+                for node in nodes
+            )
+            for node in nodes:
+                word = key(node)
+                if word == "__init_subclass__" and (shadowed or not standard_super_hook(node)):
+                    manual_subclass_hook = True
+                if word in doc_reads:
+                    class_only = word == "__doc__" and not shadowed and class_doc(node, parents)
+                    locations = class_doc_introspection if class_only else doc_introspection
+                    locations.setdefault(name, []).append(node.lineno)
             for path, readers in index.items():
                 basename = path.rpartition("/")[2]
                 if any(basename in value for value in strings) or (
@@ -94,6 +162,10 @@ def main(base, directory):
     records["discover"] = ((None, readers(discovery)),)
     records["introspect"] = ((None, observations(introspection)),)
     records["source_layout"] = ((None, observations(source_introspection)),)
+    function_docs = observations(doc_introspection)
+    if manual_subclass_hook:
+        function_docs |= observations(class_doc_introspection)
+    records["function_docs"] = ((None, function_docs),)
     build(directory / "project_readers.index", records)
 
 

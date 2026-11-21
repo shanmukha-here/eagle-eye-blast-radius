@@ -7,7 +7,7 @@ import re
 import sys
 import tomllib
 
-from definition_metadata import equivalent, identity_layout
+from definition_metadata import equivalent, function_docs, identity_layout
 from dependencies import name_bits
 from impact import UnknownChange, patched, split_diff, syntax
 from observation_file import ObservationFile
@@ -57,6 +57,7 @@ class Surface:
         self.discovery = self.mask("discover") or 0
         self.introspection = self.mask("introspect") or 0
         self.source_layout = self.mask("source_layout")
+        self.function_docs = self.mask("function_docs")
 
     def mask(self, name):
         rows = self.index.get(name) if self.index is not None else ()
@@ -167,6 +168,10 @@ class Surface:
                 and identity_layout(original, modified)):
             return (self.impact.details.positions | self.impact.details.flow.opaque |
                     self.impact.files.get(path, {}).get(0, 0) | self.source_layout)
+        if (self.source_layout is not None and self.function_docs is not None
+                and not path.endswith("/__init__.py") and function_docs(old, new)):
+            return (self.impact.details.positions | self.impact.details.flow.opaque |
+                    self.impact.files.get(path, {}).get(0, 0) | self.source_layout | self.function_docs)
         if not equivalent(path, original, modified, old, new, access.names if access else b""):
             return None
         return (self.impact.details.positions | self.impact.details.flow.opaque |

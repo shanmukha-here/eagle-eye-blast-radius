@@ -38,6 +38,28 @@ def identity_layout(before, after):
     return ast.dump(strip.visit(ast.parse(before))) == ast.dump(strip.visit(ast.parse(after)))
 
 
+def function_docs(old, new):
+    """Recognize edits confined to existing plain function docstrings."""
+    if len(old.body) != len(new.body):
+        return False
+    restore = []
+    try:
+        for before, after in zip(old.body, new.body):
+            if not (isinstance(before, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and type(before) is type(after) and not before.decorator_list and not after.decorator_list):
+                continue
+            a, b = ast.get_docstring(before, clean=False), ast.get_docstring(after, clean=False)
+            if a is None or b is None or a == b or ">>>" in a or ">>>" in b:
+                continue
+            value = after.body[0].value
+            restore.append((value, b))
+            value.value = a
+        return bool(restore) and ast.dump(old) == ast.dump(new)
+    finally:
+        for node, value in restore:
+            node.value = value
+
+
 class Normalize(ast.NodeTransformer):
     def __init__(self, package, identifiers, annotations):
         self.package = package
