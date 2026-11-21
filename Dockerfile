@@ -54,4 +54,7 @@ RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python reference_replay.py build
 COPY incumbent/ ./incumbent/
 RUN ln -s ../replay_index.z incumbent/replay_index.z \
     && ln -s ../optimizer_inputs incumbent/optimizer_inputs
+COPY risk_features.py risk_model.py risk_policy.py risk_model.bin ./
+COPY tools/build_risk_names.py /build_risk_names.py
+RUN PYTHONPATH=/app python -B /build_risk_names.py /base /app/base.z /app/risk_names.index
 CMD ["python", "/app/selector.py"]

@@ -75,3 +75,8 @@ tools/*
 !tools/trace_precision.py
 !tools/build_precision_index.py
 !tools/precision_startup.py
+!risk_features.py
+!risk_model.py
+!risk_policy.py
+!risk_model.bin
+!tools/build_risk_names.py

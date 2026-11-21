@@ -32,6 +32,7 @@ from tpcds_replay import QueryGate
 from receiver_edits import ReceiverEdits
 from registry_guard import changes_routing
 from precision import Precision
+from risk_policy import RiskPolicy
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details
 
@@ -183,14 +184,16 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     queries = QueryGate(map_path.parent, impact, scheduler, tests)
     receivers = ReceiverEdits(map_path.with_name("receiver.index"), impact)
     precision = Precision(map_path.parent, impact, scheduler, queries.test)
+    risk = RiskPolicy(map_path.parent, impact, precision, scheduler, tests)
     report = os.environ.get("BLAST_ASSERTION_REPORT") == "1"
 
-    def emit(path, plan, beginning):
+    def emit(path, plan, beginning, text=None):
+        plan = risk.apply(text, plan)
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
                            busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
-                           **queries.stats, **precision.stats)
+                           **queries.stats, **precision.stats, **risk.stats)
             print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
@@ -208,6 +211,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     for index, path in enumerate(patches):
         budget.remaining_patches = len(patches) - index
         beginning = seconds() if report else 0
+        risk_text = None
         queries.stats = {}
         precision.stats = {}
         before = mask = impact.full
@@ -229,6 +233,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 if addition(text) and metadata is None:
                     emit(path, scheduler.intersect(before, mask), beginning)
                     continue
+                risk_text = text
                 direct = observation.edit(text) if metadata is None else ("metadata", metadata)
                 if direct is not None:
                     kind, observed = direct
@@ -240,7 +245,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     ):
                         plan = references.apply(text, observed_plan)
                         plan = verify.refine(text, plan)
-                        emit(path, plan, beginning)
+                        emit(path, plan, beginning, risk_text)
                         continue
                 with PatchWorkspace(base.resolve(), text) as workspace:
                     mask = execution.refine(text, narrow.select(text, impact.select(text)), workspace)
@@ -284,7 +289,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     plan = verify.refine(text, plan)
         except UnicodeError:
             plan = scheduler.intersect(impact.full, impact.full)
-        emit(path, plan, beginning)
+        emit(path, plan, beginning, risk_text)
 
 
 if __name__ == "__main__":
