@@ -12,7 +12,7 @@ from incumbent.refine import Details as IncumbentDetails
 from incumbent.optimizer_probe import Replay as IncumbentReplay
 
 from dependencies import Dependencies
-from decision import Execution
+from decision import Execution, PatchWorkspace
 from flow import Flow
 from observed import Observers
 from optimizer_probe import Replay
@@ -83,6 +83,13 @@ class Scheduler:
         new_ids = {n for group in new for n in group}
         selected = (old_ids & new_ids) | {n for n in new_ids if self.bits[n] & keep}
         return self.repack(selected, old, new)
+
+    def replay_matters(self, old, reduced, current, keep):
+        a = self.intersect(old, current, keep)
+        b = self.intersect(reduced, current, keep)
+        return self.cost(a) != self.cost(b) or {
+            n for group in a for n in group
+        } != {n for group in b for n in group}
 
     def repack(self, selected, *previous):
         mask = 0
@@ -159,25 +166,26 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
     for path in patches:
         before = mask = impact.full
-        keep = 0
-        text = None
-        if time.monotonic() < deadline and path.stat().st_size <= 1_000_000:
-            try:
+        try:
+            if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
+                plan = scheduler.intersect(before, mask)
+            else:
                 text = path.read_text("utf-8")
-                mask = execution.refine(text, narrow.select(text, impact.select(text)))
-                # An empty emitted plan is its own intersection.
-                if scheduler.schedule(mask) != "[]":
-                    before = incumbent.select(text)
-                # Preserve the newer parser safeguard for shared grammar edits
-                # and early returns that may disrupt executor worker lifetime.
-                parser = impact.details.miniatures.tests.get("parser", 0)
-                if mask & ~before & parser and needs_parser_guard(impact, text):
-                    keep = parser
-            except UnicodeError:
-                pass
-        plan = scheduler.intersect(before, mask, keep)
-        if text is not None:
-            plan = gate.apply(text, plan)
+                with PatchWorkspace(base.resolve(), text) as workspace:
+                    mask = execution.refine(text, narrow.select(text, impact.select(text)), workspace)
+                    keep = 0
+                    # An empty emitted plan is its own intersection.
+                    if scheduler.schedule(mask) != "[]":
+                        parser = impact.details.miniatures.tests.get("parser", 0)
+                        if mask & parser and needs_parser_guard(impact, text):
+                            keep = parser
+                        incumbent.details.replay.relevant = lambda old, reduced: scheduler.replay_matters(
+                            old, reduced, mask, keep
+                        )
+                        before = incumbent.select(text)
+                    plan = gate.apply(text, scheduler.intersect(before, mask, keep), workspace)
+        except UnicodeError:
+            plan = scheduler.intersect(impact.full, impact.full)
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
 

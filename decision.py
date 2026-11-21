@@ -10,7 +10,7 @@ import time
 import unittest
 from pathlib import Path
 
-from impact import split_diff, patched, UnknownChange
+from impact import split_diff, patched, syntax, UnknownChange
 from optimizer_probe import cost
 
 
@@ -42,8 +42,36 @@ def overlay(base, root, edits):
         dest.unlink()
         content = patched(src.read_text(), hunks)
         if name.endswith(".py"):
-            compile(content, name, "exec", dont_inherit=True)
+            syntax(name, content)
         dest.write_text(content)
+
+
+
+class PatchWorkspace:
+    """Allocate one overlay on first use and share it across bounded jobs."""
+    def __init__(self, base, text):
+        self.base = base
+        self.text = text
+        self._temp = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if self._temp is not None:
+            self._temp.cleanup()
+
+    def root(self):
+        if self._temp is None:
+            temp = tempfile.TemporaryDirectory()
+            root = Path(temp.name)
+            try:
+                overlay(self.base, root, split_diff(self.text))
+            except BaseException:
+                temp.cleanup()
+                raise
+            self._temp = temp
+        return Path(self._temp.name)
 
 
 def direct(ids):
@@ -145,7 +173,7 @@ class Execution:
         if "sqlglot" in sys.modules or len(os.listdir("/proc/self/task")) != 1:
             self.budget = 0.0
 
-    def refine(self, patch, mask):
+    def refine(self, patch, mask, workspace=None):
         if not mask or mask == self.full or self.budget < 0.3 or time.monotonic() >= self.deadline:
             return mask
         # General query and parser children did not recover their CPU charge.
@@ -191,9 +219,8 @@ class Execution:
             return mask
         started = time.monotonic()
         try:
-            with tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                overlay(self.base, root, edits)
+            with contextlib.nullcontext(workspace) if workspace else PatchWorkspace(self.base, patch) as overlay_tree:
+                root = overlay_tree.root()
                 recv, send = self.ctx.Pipe(duplex=False)
                 child = self.ctx.Process(target=worker, args=(send, root, inexpensive, checks, list(edits)))
                 child.start()

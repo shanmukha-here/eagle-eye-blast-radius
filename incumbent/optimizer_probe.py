@@ -52,6 +52,7 @@ class Replay:
         self.root = Path(root).resolve()
         self.directory = directory
         self.reserved_seconds = 0.0
+        self.relevant = None
 
     def select(self, path, source, key, old, new, mask, scheduler):
         if (not mask & self.test or scheduler is None
@@ -76,6 +77,8 @@ class Replay:
         if self.reserved_seconds + timeout > 60:
             return mask
         self.reserved_seconds += timeout
+        if self.relevant is not None and not self.relevant(mask, reduced):
+            return mask
         try:
             check = subprocess.run(
                 [sys.executable, "-B", str(self.directory / "optimizer_probe.py"), str(self.root)],

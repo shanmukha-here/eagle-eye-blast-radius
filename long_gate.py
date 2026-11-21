@@ -4,11 +4,9 @@ import multiprocessing
 import os
 import signal
 import sys
-import tempfile
 import time
-from pathlib import Path
 
-from decision import affected_dialects, overlay
+from decision import affected_dialects, PatchWorkspace
 from impact import split_diff, UnknownChange
 from miniatures import CORE
 
@@ -72,7 +70,7 @@ class LongGate:
                        or path == "sqlglot/generator.py" for path in edits)
         return not any(path.startswith("sqlglot/executor/") or path == "sqlglot/serde.py" for path in edits)
 
-    def apply(self, text, workers):
+    def apply(self, text, workers, workspace=None):
         if self.available < 0.25:
             return workers
         run = {n for group in workers for n in group}
@@ -100,9 +98,8 @@ class LongGate:
             return workers
         started = time.monotonic()
         try:
-            with tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
-                overlay(self.base, root, edits)
+            with contextlib.nullcontext(workspace) if workspace else PatchWorkspace(self.base, text) as overlay_tree:
+                root = overlay_tree.root()
                 with contextlib.ExitStack() as stack:
                     recv, send = self.ctx.Pipe(duplex=False)
                     stack.enter_context(recv)
