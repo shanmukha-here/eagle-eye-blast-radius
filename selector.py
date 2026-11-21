@@ -142,7 +142,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     patches = sorted((data / "commits").glob("*.patch"))
     narrow = Narrow(impact, map_path.parent)
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
-    gate = LongGate(scheduler, profile["ids"], base, len(patches))
+    gate = LongGate(scheduler, profile["ids"], impact, len(patches))
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
     for path in patches:
         before = mask = impact.full

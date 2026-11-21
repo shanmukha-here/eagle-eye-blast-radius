@@ -1,4 +1,5 @@
 """Use small, patched workloads before retaining long integration tests."""
+import ast
 import contextlib
 import multiprocessing
 import os
@@ -9,7 +10,9 @@ import time
 from pathlib import Path
 
 from decision import affected_dialects, overlay
-from impact import split_diff, UnknownChange
+from impact import patched, split_diff, structure, UnknownChange
+from miniatures import CORE
+from stress_guard import eligible, same_full_predicates
 
 
 LONG_TESTS = {
@@ -51,9 +54,10 @@ def probe(connection, root, targets, edits):
 
 
 class LongGate:
-    def __init__(self, scheduler, profile_ids, base, count):
+    def __init__(self, scheduler, profile_ids, impact, count):
         self.scheduler = scheduler
-        self.base = base.resolve()
+        self.impact = impact
+        self.base = impact.root.resolve()
         self.ctx = multiprocessing.get_context("fork")
         self.available = min(70.0, count * 1.2)
         self.long = {}
@@ -63,6 +67,36 @@ class LongGate:
             name = profile_ids[bit.bit_length() - 1].rsplit("::", 1)[-1]
             if name in LONG_TESTS:
                 self.long[number] = LONG_TESTS[name]
+
+    def parser_supported(self, edits):
+        if len(edits) != 1:
+            return False
+        (path, hunks), = edits.items()
+        if path != "sqlglot/parser.py":
+            return False
+        try:
+            source, (outer, scopes), _ = self.impact.base(path)
+            other, revised = structure(ast.parse(patched(source, hunks)))
+            if outer != other or scopes.keys() != revised.keys():
+                return False
+            changed = [(scopes[k][3], revised[k][3]) for k in scopes if scopes[k][2] != revised[k][2]]
+            return len(changed) == 1 and eligible(path, *changed[0]) and same_full_predicates(
+                *changed[0], self.impact.details.miniatures.stress
+            )
+        except (OSError, SyntaxError, UnknownChange, ValueError, RecursionError):
+            return False
+
+    def supported(self, kind, edits):
+        if kind == "parser":
+            return self.parser_supported(edits)
+        if kind == "tpcds":
+            # SQL fingerprints do not check changes to the executor itself.
+            return not any(path in CORE or path.startswith("sqlglot/executor/") or path == "sqlglot/serde.py"
+                           for path in edits)
+        if kind == "memory":
+            return all(path.startswith(("sqlglot/generators/", "sqlglot/dialects/"))
+                       or path == "sqlglot/generator.py" for path in edits)
+        return not any(path.startswith("sqlglot/executor/") or path == "sqlglot/serde.py" for path in edits)
 
     def apply(self, text, workers):
         if self.available < 0.25:
@@ -81,14 +115,13 @@ class LongGate:
 
         targets = [
             (n, self.long[n]) for n in sorted(long, key=self.scheduler.durations.get, reverse=True)
-            if self.long[n] != "memory" or all(path.startswith(("sqlglot/generators/", "sqlglot/dialects/"))
-                                                or path == "sqlglot/generator.py" for path in edits)
+            if self.supported(self.long[n], edits)
         ]
         if not targets:
             return workers
         smaller = self.scheduler.repack(run - {n for n, _ in targets}, workers)
         gain = (self.scheduler.cost(workers) - self.scheduler.cost(smaller)) / 1000
-        cap = min(5.0, self.available, gain * 0.65)
+        cap = min(5.0, self.available, gain * 0.55)
         if cap < 0.25:
             return workers
         started = time.monotonic()
