@@ -62,9 +62,8 @@ tools/*
 
 !cpu_budget.py
 
-!assertion_index.py
-!assertion_replay.py
-!assertion_units.py
 !module_topology.py
-!tools/trace_assertions.py
-!tools/build_assertion_index.py
+!tpcds_replay.py
+!tools/build_query_gate.py
+!receiver_edits.py
+!receiver.index
