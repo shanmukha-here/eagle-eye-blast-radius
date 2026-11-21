@@ -95,8 +95,21 @@ def edit_lines(hunks):
     return lines, added, removed
 
 
-def capped_count(bit, masks):
-    return min(15, sum(bool(mask & bit) for mask in masks))
+def count_planes(masks):
+    """Count hits for all tests at once, with a four-bit saturating counter."""
+    lo = lower = upper = hi = 0
+    for mask in masks:
+        carry = mask & ~(lo & lower & upper & hi)
+        lo, carry = lo ^ carry, lo & carry
+        lower, carry = lower ^ carry, lower & carry
+        upper, carry = upper ^ carry, upper & carry
+        hi ^= carry
+    return lo, lower, upper, hi
+
+
+def plane_count(bit, planes):
+    lo, lower, upper, hi = planes
+    return bool(bit & lo) + 2 * bool(bit & lower) + 4 * bool(bit & upper) + 8 * bool(bit & hi)
 
 
 class RiskFeatures:
@@ -203,14 +216,20 @@ class RiskFeatures:
         routing = (int(count == len(self.tests)), int(bool(rules.get("receiver_declaration"))),
                    int(bool(rules.get("line_cleared"))))
         cohort = int(math.log2(max(1, count)))
+        line_counts = count_planes(lines)
+        function_counts = count_planes(functions)
+        word_counts = count_planes(lexical)
+        dialect_mask = 0
+        for hits in dialects:
+            dialect_mask |= hits
         output = []
         for n in selected:
             bit = self.scheduler.bits[n]
             stem, test_count = self.tests[n]
             output.append(common + routing + (
                 cohort, min(30000, self.scheduler.durations[n]), min(test_count, 200),
-                capped_count(bit, lines), capped_count(bit, functions),
-                capped_count(bit, lexical), int(any(bit & mask for mask in dialects)),
+                plane_count(bit, line_counts), plane_count(bit, function_counts),
+                plane_count(bit, word_counts), int(bool(bit & dialect_mask)),
                 int(stem in modules),
             ))
         return form, output

@@ -1,5 +1,6 @@
 """Evaluate a small numerical model in the scorer with a memory-mapped binary."""
 from bisect import bisect_left
+from functools import lru_cache
 from mmap import ACCESS_READ, mmap
 from struct import Struct
 
@@ -42,6 +43,7 @@ class RiskModel:
             return scale, "greedy" if greedy else "hybrid"
         return self.scale, self.style
 
+    @lru_cache(maxsize=8192)
     def raw(self, features):
         score = self.base
         for root in self.roots:

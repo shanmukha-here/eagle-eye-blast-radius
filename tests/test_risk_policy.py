@@ -3,7 +3,15 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
-from risk_features import RiskFeatures, member_change, slot_declarations
+from risk_features import RiskFeatures, count_planes, member_change, plane_count, slot_declarations
+
+
+def test_bit_sliced_counts_match_scalar_counts_and_saturate():
+    masks = [0b10101] * 20 + [0b01110] * 5 + [0b01000]
+    planes = count_planes(masks)
+    for bit in (1, 2, 4, 8, 16, 32):
+        expected = min(15, sum(bool(mask & bit) for mask in masks))
+        assert plane_count(bit, planes) == expected
 from risk_model import DOUBLE, FORM_MAGIC, FORM_POLICY, HEADER, MAGIC, NODE, ROOT, RiskModel
 from risk_policy import MISS_MS, charge, choose, hazard
 from selector import Scheduler
