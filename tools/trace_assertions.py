@@ -80,11 +80,13 @@ out = None
 def entered(code, offset):
     path = code.co_filename
     if path.startswith(root + "sqlglot/"):
-        number = objects.get(code)
-        if number is None:
+        record = objects.get(id(code))
+        if record is None:
             key = path[len(root):], code.co_firstlineno, code.co_qualname
             number = code_ids.setdefault(key, len(code_ids))
-            objects[code] = number
+            objects[id(code)] = code, number
+        else:
+            _, number = record
         if frames:
             frames[-1][0].add(number)
             if code.co_argcount and code.co_varnames[0] in ("self", "cls"):
@@ -204,9 +206,11 @@ def pytest_collection_finish(session):
     replace(unittest.TestCase, "subTest", subtest(unittest.TestCase.subTest))
     for name in ("assertLogs", "assertWarns", "assertWarnsRegex"):
         replace(unittest.TestCase, name, observed("warnings", getattr(unittest.TestCase, name)))
-    for owner, name, reason in ((os, "getenv", "environment"), (time, "time", "time"),
+    for owner, name, reason in ((os, "getenv", "environment"),
+                                (type(os.environ), "__getitem__", "environment"), (time, "time", "time"),
                                 (time, "monotonic", "time"), (random, "random", "randomness"),
-                                (random, "randint", "randomness"), (warnings, "warn", "warnings")):
+                                (random, "randint", "randomness"), (random, "choice", "randomness"),
+                                (os, "urandom", "randomness"), (warnings, "warn", "warnings")):
         replace(owner, name, observed(reason, getattr(owner, name)))
 
 

@@ -86,9 +86,11 @@ def worker(send, root, index, tasks, cap):
                 state.add("environment")
 
         sys.addaudithook(audit)
-        for owner, attr, reason in ((os, "getenv", "environment"), (time, "time", "time"),
+        for owner, attr, reason in ((os, "getenv", "environment"),
+                                    (type(os.environ), "__getitem__", "environment"), (time, "time", "time"),
                                     (time, "monotonic", "time"), (random, "random", "randomness"),
-                                    (random, "randint", "randomness"), (warnings, "warn", "warnings")):
+                                    (random, "randint", "randomness"), (random, "choice", "randomness"),
+                                    (os, "urandom", "randomness"), (warnings, "warn", "warnings")):
             setattr(owner, attr, tracked_value(reason, getattr(owner, attr), paths, state))
 
         for number, name, units in tasks:
@@ -108,9 +110,9 @@ def worker(send, root, index, tasks, cap):
                             getattr(instance, name)(*args, **kwargs)
                         elif kind == "direct":
                             recipe, values = payload
-                            module = sys.modules[type(instance).__module__]
+                            namespace = getattr(type(instance), test).__globals__
                             eval(compile(recipe, "<clean assertion>", "eval", dont_inherit=True),
-                                 vars(module), {"self": instance, **values})
+                                 namespace, {"self": instance, **values})
                         else:
                             raise ValueError("Unsupported assertion payload")
                     finally:
