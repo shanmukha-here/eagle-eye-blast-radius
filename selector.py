@@ -34,6 +34,7 @@ from tpcds_replay import QueryGate
 from receiver_edits import ReceiverEdits
 from registry_guard import changes_routing
 from precision import Precision
+from precision_index import PrecisionIndex
 from recovery import Recovery
 from risk_policy import RiskPolicy
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
@@ -252,6 +253,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     precision = Precision(map_path.parent, impact, scheduler, queries.test)
     risk = RiskPolicy(map_path.parent, impact, precision, scheduler, tests)
     recovery = Recovery(map_path.parent, impact, receivers)
+    routing = map_path.with_name("routing.index")
+    if routing.is_file():
+        impact.routing = PrecisionIndex(routing)
     fallback_plan = scheduler.intersect(impact.full, impact.full)
     report = os.environ.get("BLAST_ASSERTION_REPORT") == "1"
 

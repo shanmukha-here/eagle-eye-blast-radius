@@ -67,4 +67,5 @@ RUN PYTHONPATH=/app python -B /build_import_closure.py /base /app
 COPY cold_import.py ./
 COPY tools/build_cold_import_index.py /build_cold_import_index.py
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app python -B /build_cold_import_index.py /base /app/cold_import.index /app/import_check.py
+RUN PYTHONPATH=/app python -B /app/registry_guard.py /base /app/routing.index
 CMD ["python", "/app/selector.py"]
