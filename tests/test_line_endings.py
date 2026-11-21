@@ -27,7 +27,7 @@ def test_line_ending_proof_keeps_fixture_readers(tmp_path):
         file = tmp_path / path
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(data)
-    details = SimpleNamespace(lines={source: {}}, positions=2, flow=SimpleNamespace(opaque=1))
+    details = SimpleNamespace(ids=[], lines={source: {}}, positions=2, flow=SimpleNamespace(opaque=1))
     impact = SimpleNamespace(root=tmp_path, details=details, files={fixture: {0: 4}})
     surface = Surface(impact, tmp_path, {})
     surface.index = SimpleNamespace(get=lambda _: ())

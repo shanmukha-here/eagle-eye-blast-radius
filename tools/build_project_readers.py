@@ -74,6 +74,7 @@ def main(base, directory):
     source_introspection = {}
     doc_introspection = {}
     class_doc_introspection = {}
+    annotation_introspection = {}
     manual_subclass_hook = False
     metadata_reads = {"__annotations__", "__doc__", "co_consts", "get_annotations",
                       "get_type_hints", "getdoc", "getcomments", "getsource",
@@ -83,6 +84,8 @@ def main(base, directory):
                     "settrace", "f_lineno", "f_trace", "tb_lineno", "extract_stack", "format_stack",
                     "get_instructions", "disassemble"}
     doc_reads = {"__doc__", "getdoc", "DocTestSuite", "DocTestFinder", "find_doctest"}
+    annotation_reads = {"__annotations__", "__annotate__", "get_annotations", "get_type_hints",
+                        "signature", "annotationlib"}
     for source_dir in ("sqlglot", "tests"):
         for source in sorted((base / source_dir).rglob("*.py")):
             name = source.relative_to(base).as_posix()
@@ -130,6 +133,8 @@ def main(base, directory):
                     class_only = word == "__doc__" and not shadowed and class_doc(node, parents)
                     locations = class_doc_introspection if class_only else doc_introspection
                     locations.setdefault(name, []).append(node.lineno)
+                if word in annotation_reads:
+                    annotation_introspection.setdefault(name, []).append(node.lineno)
             for path, readers in index.items():
                 basename = path.rpartition("/")[2]
                 if any(basename in value for value in strings) or (
@@ -166,6 +171,7 @@ def main(base, directory):
     if manual_subclass_hook:
         function_docs |= observations(class_doc_introspection)
     records["function_docs"] = ((None, function_docs),)
+    records["annotations"] = ((None, observations(annotation_introspection)),)
     build(directory / "project_readers.index", records)
 
 

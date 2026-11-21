@@ -38,26 +38,47 @@ def identity_layout(before, after):
     return ast.dump(strip.visit(ast.parse(before))) == ast.dump(strip.visit(ast.parse(after)))
 
 
-def function_docs(old, new):
-    """Recognize edits confined to existing plain function docstrings."""
-    if len(old.body) != len(new.body):
-        return False
+def function_docs(old, new, *, doctests=True):
+    """Recognize edits confined to plain function and method docstrings."""
     restore = []
     try:
-        for before, after in zip(old.body, new.body):
-            if not (isinstance(before, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and type(before) is type(after) and not before.decorator_list and not after.decorator_list):
-                continue
-            a, b = ast.get_docstring(before, clean=False), ast.get_docstring(after, clean=False)
-            if a is None or b is None or a == b or ">>>" in a or ">>>" in b:
-                continue
-            value = after.body[0].value
-            restore.append((value, b))
-            value.value = a
+        for tree in (old, new):
+            for scope in list(ast.walk(tree)):
+                if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)) or scope.decorator_list:
+                    continue
+                doc = ast.get_docstring(scope, clean=False)
+                if doc is not None and (not doctests or ">>>" not in doc):
+                    restore.append((scope, scope.body))
+                    scope.body = scope.body[1:]
         return bool(restore) and ast.dump(old) == ast.dump(new)
     finally:
-        for node, value in restore:
-            node.value = value
+        for scope, body in restore:
+            scope.body = body
+
+
+def future_types(old, new):
+    """Recognize annotation-only edits when annotations are postponed."""
+    if not (has_future_annotations(old) and has_future_annotations(new)):
+        return False
+    restore = []
+    marker = ast.Constant(None)
+    try:
+        for tree in (old, new):
+            for node in list(ast.walk(tree)):
+                if isinstance(node, ast.arg):
+                    field = "annotation"
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    field = "returns"
+                else:
+                    continue
+                value = getattr(node, field)
+                if value is not None:
+                    restore.append((node, field, value))
+                    setattr(node, field, marker)
+        return bool(restore) and ast.dump(old) == ast.dump(new)
+    finally:
+        for node, field, value in restore:
+            setattr(node, field, value)
 
 
 class Normalize(ast.NodeTransformer):

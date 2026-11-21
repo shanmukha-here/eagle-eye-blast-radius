@@ -7,7 +7,7 @@ import re
 import sys
 import tomllib
 
-from definition_metadata import equivalent, function_docs, identity_layout
+from definition_metadata import equivalent, function_docs, future_types, identity_layout
 from dependencies import name_bits
 from impact import UnknownChange, patched, split_diff, syntax
 from observation_file import ObservationFile
@@ -58,6 +58,8 @@ class Surface:
         self.introspection = self.mask("introspect") or 0
         self.source_layout = self.mask("source_layout")
         self.function_docs = self.mask("function_docs")
+        self.annotations = self.mask("annotations")
+        self.doctests = any(not name.startswith("tests/") for name in impact.details.ids)
 
     def mask(self, name):
         rows = self.index.get(name) if self.index is not None else ()
@@ -153,7 +155,8 @@ class Surface:
         if raw is not None:
             signs = [line[1:].lstrip() for line in raw.splitlines()
                      if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
-            if not any(line.startswith(("'", '"', "@", "from ")) or " -> " in line for line in signs):
+            if not any(line.startswith(("'", '"', "@", "from ")) or " -> " in line
+                       or re.match(r"\**\w+\s*:\s*\w+", line) for line in signs):
                 return None
         original = (self.impact.root / path).read_text()
         modified = patched(original, hunks)
@@ -169,9 +172,13 @@ class Surface:
             return (self.impact.details.positions | self.impact.details.flow.opaque |
                     self.impact.files.get(path, {}).get(0, 0) | self.source_layout)
         if (self.source_layout is not None and self.function_docs is not None
-                and not path.endswith("/__init__.py") and function_docs(old, new)):
+                and not path.endswith("/__init__.py") and function_docs(old, new, doctests=self.doctests)):
             return (self.impact.details.positions | self.impact.details.flow.opaque |
                     self.impact.files.get(path, {}).get(0, 0) | self.source_layout | self.function_docs)
+        if (self.source_layout is not None and self.annotations is not None
+                and future_types(old, new)):
+            return (self.impact.details.positions | self.impact.details.flow.opaque |
+                    self.impact.files.get(path, {}).get(0, 0) | self.source_layout | self.annotations)
         if not equivalent(path, original, modified, old, new, access.names if access else b""):
             return None
         return (self.impact.details.positions | self.impact.details.flow.opaque |
