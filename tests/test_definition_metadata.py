@@ -1,6 +1,7 @@
 import ast
 
 from definition_metadata import function_docs, future_types
+from tools.build_project_readers import parameter_names, standard_names
 
 
 def test_function_doc_update_preserves_runtime_shape():
@@ -34,3 +35,19 @@ def test_only_postponed_annotation_values_are_ignored():
     assert not future_types(ast.parse(old), ast.parse(new))
     assert future_types(ast.parse(future + old), ast.parse(future + new))
     assert not future_types(ast.parse(future + old), ast.parse(future + new.replace("return value", "return None")))
+
+
+def test_signature_keys_do_not_expose_annotation_values():
+    def recognized(text):
+        tree = ast.parse("import inspect\n" + text)
+        nodes = list(ast.walk(tree))
+        parents = {child: node for node in nodes for child in ast.iter_child_nodes(node)}
+        member, = [node for node in nodes if isinstance(node, ast.Attribute) and node.attr == "signature"]
+        return standard_names(tree, nodes) and parameter_names(member, parents)
+
+    names = "[name for _, name in enumerate(inspect.signature(fn).parameters)]\n"
+    assert recognized(names)
+    assert not recognized("enumerate = callback\n" + names)
+    assert not recognized(names.replace("signature(fn)", "signature(fn, eval_str=True)"))
+    assert not recognized(names.replace(".parameters", ".parameters.values()"))
+    assert not recognized("sample = inspect.signature(fn).parameters\n")

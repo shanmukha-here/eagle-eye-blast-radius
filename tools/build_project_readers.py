@@ -29,6 +29,47 @@ def standard_super_hook(node):
             and not node.value.args and not node.value.keywords)
 
 
+def standard_names(tree, nodes):
+    """Check the bindings used by names-only signature consumers."""
+    candidates = {"inspect", "enumerate"}
+    direct = {item for node in tree.body if isinstance(node, ast.Import)
+              for item in node.names if item.name == "inspect" and not item.asname}
+    if len(direct) != 1:
+        return False
+    for node in nodes:
+        if isinstance(node, ast.alias) and node not in direct:
+            if (node.asname or node.name.partition(".")[0]) in candidates:
+                return False
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in candidates
+                or isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load) and node.id in candidates
+                or isinstance(node, ast.arg) and node.arg in candidates
+                or isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name in candidates
+                or isinstance(node, ast.Attribute) and not isinstance(node.ctx, ast.Load)
+                and isinstance(node.value, ast.Name) and node.value.id == "inspect"):
+            return False
+    return True
+
+
+def parameter_names(node, parents):
+    """Recognize iteration over signature keys without exposing annotations."""
+    if not (isinstance(node, ast.Attribute) and node.attr == "signature"
+            and isinstance(node.value, ast.Name) and node.value.id == "inspect"):
+        return False
+    call = parents.get(node)
+    if not (isinstance(call, ast.Call) and call.func is node and len(call.args) == 1 and not call.keywords
+            and not isinstance(call.args[0], ast.Starred)):
+        return False
+    parameters = parents.get(call)
+    if not (isinstance(parameters, ast.Attribute) and parameters.attr == "parameters"
+            and isinstance(parameters.ctx, ast.Load)):
+        return False
+    user = parents.get(parameters)
+    if (isinstance(user, ast.Call) and isinstance(user.func, ast.Name) and user.func.id == "enumerate"
+            and user.args == [parameters] and not user.keywords):
+        parameters, user = user, parents.get(user)
+    return isinstance(user, (ast.comprehension, ast.For)) and user.iter is parameters
+
+
 def class_doc(node, parents):
     """Recognize doc access on the class supplied by Python's subclass hook."""
     parent = parents.get(node)
@@ -117,6 +158,7 @@ def main(base, directory):
             if physical:
                 source_introspection[name] = physical
             parents = {child: node for node in nodes for child in ast.iter_child_nodes(node)}
+            standard_inspect = standard_names(tree, nodes)
             builtins_used = {"getattr", "setattr", "super"}
             shadowed = any(
                 isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name in builtins_used
@@ -134,6 +176,8 @@ def main(base, directory):
                     locations = class_doc_introspection if class_only else doc_introspection
                     locations.setdefault(name, []).append(node.lineno)
                 if word in annotation_reads:
+                    if word == "signature" and standard_inspect and parameter_names(node, parents):
+                        continue
                     annotation_introspection.setdefault(name, []).append(node.lineno)
             for path, readers in index.items():
                 basename = path.rpartition("/")[2]
