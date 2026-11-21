@@ -300,7 +300,7 @@ class LongCases:
                 or self.tests[test] in fixtures
                 or any(self.index.mask(f"{self.tests[test]}:{path}") for path in sources)}
 
-    def apply(self, text, workers, workspace, cpu_limit, declaration=False, only=None):
+    def apply(self, text, workers, workspace, cpu_limit, declaration=False, only=None, masks=None):
         if self.index is None or "sqlglot" in sys.modules:
             return workers
         chosen = {n for worker in workers for n in worker}
@@ -309,7 +309,8 @@ class LongCases:
             active &= only
         if not active:
             return workers
-        masks = self.changes(text, declaration)
+        if masks is None:
+            masks = self.changes(text, declaration)
         if masks is None:
             return workers
         jobs = []
@@ -350,6 +351,23 @@ class LongCases:
             )
             return self.scheduler.repack(chosen - cleared, workers)
         return workers
+
+    def mixed_memory(self, text, workers, workspace, cpu_limit, evidence):
+        """Validate the recorded memory subcases for a verified fixture union."""
+        dialect, changes, fixtures = evidence
+        if not dialect or self.index is None or not self.index.mask("module_coverage"):
+            return workers
+        active = {test for group in workers for test in group if self.tests.get(test) == MEMORY
+                  and self.scheduler.bits[test] and not self.scheduler.bits[test] & fixtures}
+        if not active:
+            return workers
+        declaration = self.index.mask(f"{MEMORY}:{dialect}")
+        bodies = self.body_masks(changes)
+        if not declaration or bodies is None:
+            return workers
+        masks = [0] * len(METHODS)
+        masks[MEMORY] = declaration | bodies[MEMORY]
+        return self.apply(text, workers, workspace, cpu_limit, only=active, masks=masks)
 
     def verified_source(self, path, hunks):
         if (not path.startswith("sqlglot/") or not path.endswith(".py")

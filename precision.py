@@ -191,6 +191,7 @@ class Precision:
             files = 0
             changes = {}
             declaration = 0
+            dialect_path = None
             for section in re.split(r"(?=^diff --git )", text, flags=re.MULTILINE)[1:]:
                 path, = split_diff(section)
                 if path.startswith("tests/fixtures/") and path.endswith(".sql"):
@@ -208,6 +209,7 @@ class Precision:
                         declaration = self.dialect_table(path, edits[path], recovery)
                         if declaration is None:
                             return None
+                        dialect_path = path
                     else:
                         changes.update(footprint_of_section)
             if not files or not changes:
@@ -220,6 +222,6 @@ class Precision:
             observed = changed | anchors | control | branch | outside
             if not observed:
                 return None
-            return files | observed | declaration | self.protected(changes)
+            return files | observed | declaration | self.protected(changes), (dialect_path, changes, files)
         except (OSError, SyntaxError, UnicodeError, UnknownChange, ValueError, RecursionError):
             return None
