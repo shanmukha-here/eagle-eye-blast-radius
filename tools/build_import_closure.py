@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 import zlib
 
-from precision_index import build
+from precision_index import PrecisionIndex, build
 from impact import structure
 
 
@@ -62,6 +62,9 @@ def main(root, out):
         return json.loads(zlib.decompress((out / name).read_bytes()))
 
     base, details = read("base.z"), read("details.z")
+    precision = PrecisionIndex(out / "precision.index")
+    if not precision.mask("!import_lines"):
+        raise ValueError("Missing clean import-time observations")
     observed = {path:int(mask, 16) for path, mask in base["visitors"].items()}
     pool = [int(mask, 16) for mask in details["bits"]]
     for family in ("imports", "dialects"):
@@ -95,6 +98,7 @@ def main(root, out):
                 line_mask = lines.get(str(line))
                 if line_mask is not None:
                     recorded |= pool[line_mask]
+                recorded |= precision.mask(f"IL:{path}:{line}")
             members["attr:" + member] = recorded
         for imported in scanner.result - {path}:
             consumers[imported].add(path)
