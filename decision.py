@@ -17,6 +17,21 @@ from optimizer_probe import cost
 def overlay(base, root, edits, validate=True):
     """Only copy modified files; symlink untouched subtrees from the clean pin."""
     expanded = set()
+    changed = {Path(name) for name in edits}
+
+    def expand(directory):
+        for item in (base / directory).iterdir():
+            if item.name != "__pycache__":
+                (root / directory / item.name).symlink_to(item)
+                continue
+            stale = {src.name.split(".", 1)[0] for src in changed if src.parent == directory}
+            cached = root / directory / "__pycache__"
+            cached.mkdir()
+            for bytecode in item.iterdir():
+                if bytecode.name.split(".", 1)[0] not in stale:
+                    (cached / bytecode.name).symlink_to(bytecode)
+        expanded.add(directory)
+
     for name, hunks in edits.items():
         src = base / name
         if not src.is_file() or not name.startswith(("sqlglot/", "tests/")):
@@ -24,20 +39,14 @@ def overlay(base, root, edits, validate=True):
         current = Path()
         for part in Path(name).parts[:-1]:
             if current not in expanded:
-                for item in (base / current).iterdir():
-                    if item.name != "__pycache__":
-                        (root / current / item.name).symlink_to(item)
-                expanded.add(current)
+                expand(current)
             current /= part
             dest = root / current
             if dest.is_symlink():
                 dest.unlink()
                 dest.mkdir()
         if current not in expanded:
-            for item in (base / current).iterdir():
-                if item.name != "__pycache__":
-                    (root / current / item.name).symlink_to(item)
-            expanded.add(current)
+            expand(current)
         dest = root / name
         dest.unlink()
         content = patched(src.read_text(), hunks)

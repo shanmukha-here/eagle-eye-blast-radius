@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 RUN python -m pip install --disable-pip-version-check --no-cache-dir --no-deps --index-url https://pypi.org/simple --only-binary=:all: python-dateutil==4.0.0 tzdata==2026.6
 COPY --from=source /src/sqlglot /base/sqlglot
 COPY --from=source /src/tests /base/tests
-RUN python -m compileall -q /base/sqlglot
+RUN python -m compileall -q /base/sqlglot /base/tests
 WORKDIR /app
 COPY impact.py refine.py import_check.py dependencies.py base.z details.z access.z flow.py reach.py observed.py observers.z flow.z checkpoint.py optimizer_probe.py replay_index.z query_lines.z parser_probe.py miniatures.py stress_guard.py short_probe.py startup.py startup.z stress.z memory_index.z value_observations.py query_values.z ./
 COPY tools/build_tpch_sql.py /build_tpch_sql.py

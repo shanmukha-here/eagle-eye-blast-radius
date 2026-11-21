@@ -38,6 +38,7 @@ def run_unittests(ids):
         test_names[name] = node
         tests.addTest(group)
     result = UnitOutcomes()
+    result.failfast = True
     tests.run(result)
     # Fixture errors can be emitted after otherwise successful methods.
     if any(not isinstance(test, unittest.TestCase) for test, _ in (*result.errors, *result.skipped)):
@@ -113,7 +114,7 @@ class ExactTests:
         expected = (sum(weights[n] for n in selected) + sum(fixtures.values())) / 1000
         if expected > 2.55:
             return plan
-        cap = min(remaining, self.scheduler.cost(plan) / 1300, max(0.46, 1.12 * expected + 0.22))
+        cap = min(remaining, self.scheduler.cost(plan) / 1250, max(0.9, 1.45 * expected + 0.65))
         result = self.run(edits, names, cap, collect=False)
         if result is not None and all(name in self.numbers for name in result):
             passed = {self.numbers[name] for name in result}
