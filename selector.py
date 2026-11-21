@@ -278,6 +278,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         coverage = recovered[0]
         return not mask & scheduler.known & ~coverage and bool(coverage & short_bits & ~mask)
 
+    def can_certify(text):
+        return precision.short_certificate(text) or recovery.inert_addition(text)
+
     def emit(path, plan, beginning, text=None, verified=False):
         recovered = None if verified else recovery.declarations(text)
         skip_risk = False
@@ -320,11 +323,13 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     precision.stats["ordinary_long_unobserved"] = len(active - retained)
                     plan = scheduler.repack(selected.difference(active - retained), plan)
         if text:
-            checked = verify.certify_small(text, plan, lambda value: (
-                precision.short_certificate(value) or recovery.inert_addition(value)
-            ))
+            checked = verify.certify_small(text, plan, can_certify)
             if checked != plan:
                 precision.stats["small_clean_cohort"] = sum(map(len, plan))
+                plan = checked
+            checked = verify.certify_worker(text, plan, can_certify)
+            if checked != plan:
+                precision.stats["short_worker_cleared"] = sum(map(len, plan)) - sum(map(len, checked))
                 plan = checked
             if plan:
                 insured = scheduler.insure(plan, insurance_scope(text), verify.passed)

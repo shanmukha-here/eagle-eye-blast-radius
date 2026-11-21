@@ -205,6 +205,42 @@ class ExactTests:
         finally:
             self.cleanup_remaining -= seconds() - start
 
+    def certify_worker(self, patch, plan, certificate):
+        """Check an affordable standalone cohort that could erase a worker."""
+        if len(plan) < 2 or self.cleanup_remaining < 0.36:
+            return plan
+        if sum(map(len, plan)) > 288:
+            return plan
+        weights = self.scheduler.durations
+        possible = []
+        all_tests = {number for worker in plan for number in worker}
+        original_cost = self.scheduler.cost(plan)
+        for worker in plan:
+            if len(worker) > 64 or any(self.nodes[n] not in self.ready for n in worker):
+                continue
+            names = tuple(sorted(self.nodes[n] for n in worker))
+            if names in self.attempted:
+                continue
+            estimate = max(self.fixture_cpu(worker), sum(weights[n] for n in worker) / 1000.0)
+            if estimate > 0.54:
+                continue
+            reduced = self.scheduler.repack(all_tests.difference(worker), plan)
+            savings = original_cost - self.scheduler.cost(reduced)
+            if savings >= 1500:
+                possible.append((savings - 1000 * estimate, estimate, worker))
+        if not possible or not certificate(patch):
+            return plan
+        _, estimate, worker = max(possible)
+        cap = min(self.cleanup_remaining, 0.88, 1.35 * estimate + 0.40)
+        start = seconds()
+        try:
+            revised = self.refine(patch, [worker], allowance=cap)
+            kept = all_tests.difference(worker)
+            kept.update(n for group in revised for n in group)
+            return self.scheduler.repack(kept, plan) if kept != all_tests else plan
+        finally:
+            self.cleanup_remaining -= seconds() - start
+
     def fixture_cpu(self, selected):
         """Estimate a fresh class fixture even when a test itself is cheap."""
         if self.profile is None:
