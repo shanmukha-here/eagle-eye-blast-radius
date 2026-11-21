@@ -115,8 +115,9 @@ def change_coverage(patch, lines):
             rows = lines.get(text.split()[2][2:], {})
             old = None
         elif text.startswith("@@ "):
-            start = text.split()[1].split(",")[0]
-            old = -int(start)
+            start, _, count = text.split()[1].partition(",")
+            # For a zero-length old range, Git names the line *before* the insertion.
+            old = -int(start) + (count == "0")
             removed = False
         elif old is not None:
             if text.startswith(" "):
