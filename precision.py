@@ -158,3 +158,41 @@ class Precision:
             return None
         self.stats["direct_body"] = mask.bit_count()
         return mask
+
+    def fixture_union(self, text):
+        """Union known fixture readers with exact ordinary-body observers."""
+        if self.index is None or "diff --git a/tests/fixtures/" not in text:
+            return None
+        try:
+            edits = split_diff(text)
+            if not 2 <= len(edits) <= 4 or not self.index.mask("!import_lines"):
+                return None
+            files = 0
+            changes = {}
+            for section in re.split(r"(?=^diff --git )", text, flags=re.MULTILINE)[1:]:
+                path, = split_diff(section)
+                if path.startswith("tests/fixtures/") and path.endswith(".sql"):
+                    readers = self.impact.files.get(path, {}).get(0)
+                    if not readers:
+                        return None
+                    original = (self.impact.root / path).read_text()
+                    patched(original, edits[path])
+                    files |= readers
+                else:
+                    footprint_of_section = footprint(self.impact, section, package_body=True)
+                    if footprint_of_section is None:
+                        return None
+                    changes.update(footprint_of_section)
+            if not files or not changes:
+                return None
+            for path, records in changes.items():
+                if any(range_mask(self.index.mask, "IL", path, body | anchors | control)
+                       for _, _, (body, anchors, control) in records):
+                    return None
+            _, changed, anchors, control, branch, outside, _ = evidence(self.index, changes)
+            observed = changed | anchors | control | branch | outside
+            if not observed:
+                return None
+            return files | observed | self.protected(changes)
+        except (OSError, SyntaxError, UnicodeError, UnknownChange, ValueError, RecursionError):
+            return None

@@ -85,7 +85,7 @@ def body_regions(before, after):
 
 
 @lru_cache(maxsize=8)
-def footprint(impact, text):
+def footprint(impact, text, *, package_body=False):
     """Bound a diff to compiled, same-binding bodies with no namespace edits."""
     try:
         edits = split_diff(text)
@@ -93,7 +93,8 @@ def footprint(impact, text):
             return None
         changes = {}
         for path, hunks in edits.items():
-            if not path.startswith("sqlglot/") or not path.endswith(".py") or path.endswith("/__init__.py"):
+            if (not path.startswith("sqlglot/") or not path.endswith(".py")
+                    or path.endswith("/__init__.py") and not package_body):
                 return None
             source, (outer, scopes), code = impact.base(path)
             other = patched(source, hunks)
