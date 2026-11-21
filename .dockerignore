@@ -47,3 +47,4 @@ tools/*
 !ready_imports.json
 !memo_witness.py
 !parser_signal.py
+!tools/build_unit_ready.py

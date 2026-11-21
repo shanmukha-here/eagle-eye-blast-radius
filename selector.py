@@ -200,7 +200,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     observation = ObservationIndex(impact, map_path.with_name("values.z"))
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
-    verify = ExactTests(scheduler, tests, base, len(patches))
+    verify = ExactTests(scheduler, tests, base, len(patches), map_path.with_name("unit_ready.json"))
     parser_bit = impact.details.miniatures.tests.get("parser", 0)
     parser_id = next((number for number, bit in scheduler.bits.items() if bit and bit == parser_bit), None)
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)

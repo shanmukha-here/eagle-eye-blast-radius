@@ -24,6 +24,8 @@ RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python query_sentinel.py
 COPY decision.py selector.py narrow.py fixture_reads.json long_gate.py parser_signal.py ./
 COPY observation_index.py value_observations.py values.z ready_imports.json ./
 COPY exact_tests.py ./
+COPY tools/build_unit_ready.py /build_unit_ready.py
+RUN SKIP_INTEGRATION=0 PYTHONPATH=/app:/base python /build_unit_ready.py /app/base.z /app/unit_ready.json /base
 COPY reference_replay.py reference_reads.json ./
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python reference_replay.py build
 COPY incumbent/ ./incumbent/

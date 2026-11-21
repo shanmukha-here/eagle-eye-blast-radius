@@ -1,6 +1,7 @@
 """Bound complete pytest executions of cheap affected tests."""
 
 import contextlib
+import json
 import multiprocessing
 import os
 import signal
@@ -9,31 +10,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from decision import overlay
+from decision import direct, overlay
 from impact import split_diff, UnknownChange
-
-
-class Outcomes:
-    def __init__(self):
-        self.phases = {}
-        self.uncertain = set()
-
-    def pytest_runtest_logreport(self, report):
-        if report.passed and not hasattr(report, "wasxfail"):
-            self.phases.setdefault(report.nodeid, set()).add(report.when)
-        else:
-            self.uncertain.add(report.nodeid)
-
-    def pytest_collectreport(self, report):
-        if report.failed:
-            self.uncertain.add(None)
-
-    def passed(self):
-        if None in self.uncertain:
-            return []
-        complete = {"setup", "call", "teardown"}
-        return sorted(node for node, phases in self.phases.items()
-                      if phases == complete and node not in self.uncertain)
 
 
 class Collection:
@@ -52,23 +30,18 @@ def child(send, directory, ids, collect):
             os.dup2(sink.fileno(), 2)
         os.chdir(directory)
         sys.path.insert(0, str(directory))
+        if not collect:
+            passed, _ = direct(ids)
+            send.send(passed)
+            return
         import pytest
 
         options = ["-q", "-p", "no:cacheprovider", "--rootdir", str(directory)]
-        if collect:
-            checks = Collection()
-            options += ["--collect-only", "--continue-on-collection-errors", "tests"]
-        else:
-            checks = Outcomes()
-            options += ["--", *ids]
-        result = pytest.main(
-            options,
-            plugins=[checks],
-        )
-        if collect and checks.ids is not None:
+        checks = Collection()
+        options += ["--collect-only", "--continue-on-collection-errors", "tests"]
+        pytest.main(options, plugins=[checks])
+        if checks.ids is not None:
             send.send(checks.ids)
-        elif not collect and result in (pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED):
-            send.send(checks.passed())
     except (Exception, SystemExit):
         pass
     finally:
@@ -76,11 +49,12 @@ def child(send, directory, ids, collect):
 
 
 class ExactTests:
-    def __init__(self, scheduler, definitions, base, count):
+    def __init__(self, scheduler, definitions, base, count, ready):
         self.scheduler = scheduler
         self.nodes = {r["number"]: r["id"] for r in definitions}
         self.numbers = {v: k for k, v in self.nodes.items()}
         self.root = base.resolve()
+        self.ready = set(json.loads(ready.read_bytes()))
         self.ctx = multiprocessing.get_context("fork")
         self.remaining = min(25.0, count * 0.44)
         self.deadline = time.monotonic() + min(130.0, count * 2.3 + 3.0)
@@ -102,8 +76,10 @@ class ExactTests:
         except UnknownChange:
             return plan
         # A successful all-pass run can erase at least a worker's startup cost.
-        cap = min(remaining, self.scheduler.cost(plan) / 3000, 1.3)
+        cap = min(remaining, self.scheduler.cost(plan) / 3000, 0.65)
         names = sorted(self.nodes[n] for n in selected)
+        if not set(names) <= self.ready:
+            return plan
         result = self.run(edits, names, cap, collect=False)
         if result is not None and all(name in self.numbers for name in result):
             passed = {self.numbers[name] for name in result}
@@ -129,12 +105,12 @@ class ExactTests:
     def run(self, edits, names, cap, collect):
         started = time.monotonic()
         try:
-            # Warm only the testing machinery. Each child imports SQLGlot
-            # from its own overlay before collecting any tests.
-            import pytest
+            if collect:
+                # Warm only the testing machinery. SQLGlot stays cold in each child.
+                import pytest
 
-            if pytest.__version__.split(".")[0] != "9" or "sqlglot" in sys.modules:
-                return None
+                if pytest.__version__.split(".")[0] != "9" or "sqlglot" in sys.modules:
+                    return None
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 overlay(self.root, root, edits, validate=not collect)
