@@ -1,6 +1,6 @@
 """Apply fine observation masks for verified bodies and dispatch values."""
 
-from impact import UnknownChange, patched, split_diff
+from impact import UnknownChange, patched, split_diff, syntax
 from precision_body import evidence, footprint, range_mask
 from precision_index import PrecisionIndex
 from registry_keys import one_entry

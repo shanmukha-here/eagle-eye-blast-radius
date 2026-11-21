@@ -63,3 +63,27 @@ def test_integration_queries_require_execution_evidence(tmp_path):
     gate = LongGate(scheduler, [name], tmp_path, 60)
     assert gate.apply("synthetic patch", [[0]]) == [[0]]
     assert 0 not in gate.long
+
+
+def test_nested_scope_short_certificate_checks_import_observations(tmp_path):
+    import difflib
+    from types import SimpleNamespace
+
+    from impact import Impact
+    from precision import Precision
+
+    path = "sqlglot/demo.py"
+    before = "def factory():\n    def run():\n        return 1\n    return run\n"
+    after = before.replace("return 1", "return 2")
+    source = tmp_path / path
+    source.parent.mkdir()
+    source.write_text(before)
+    diff = f"diff --git a/{path} b/{path}\n" + "".join(difflib.unified_diff(
+        before.splitlines(True), after.splitlines(True), fromfile="a/" + path, tofile="b/" + path,
+    ))
+    precision = object.__new__(Precision)
+    precision.impact = Impact(tmp_path, {"ids": [], "files": {}, "visitors": {}})
+    precision.index = SimpleNamespace(mask={"!import_lines": 1}.get)
+    assert precision.short_certificate(diff)
+    precision.index = SimpleNamespace(mask={"!import_lines": 1, f"IL:{path}:3": 1}.get)
+    assert not precision.short_certificate(diff)
