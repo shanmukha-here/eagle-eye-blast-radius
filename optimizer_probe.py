@@ -39,8 +39,6 @@ def local_edit(old, new):
 
 def suppressed_join_bucket(old, new):
     """Removing a key insertion cannot affect a query with no candidate pairs."""
-    if old.name != "hash_join":
-        return None
     before, after = copy.deepcopy(old), copy.deepcopy(new)
     conditions = [n for n in ast.walk(before) if isinstance(n, ast.If)]
     replacements = [n for n in ast.walk(after) if isinstance(n, ast.If)]

@@ -37,3 +37,11 @@ class ProbeGuards(unittest.TestCase):
         new = structure(body("def parse(sql):\n    return sql[:100]"))
         self.assertEqual(probes.protect_core(1, None, "sqlglot/tokens.py", "", old, new), 5)
         self.assertEqual(probes.protect_core(1, None, "sqlglot/tokens.py", "", old, old), 1)
+
+    def test_join_body_coverage(self):
+        from optimizer_probe import suppressed_join_bucket
+
+        original = body("if all(value is not None for value in key):\n    results[key][0].append((index, reader.row))\nrow = source_row + join_row")
+        narrowed = body("if False:\n    results[key][0].append((index, reader.row))\nrow = source_row + join_row")
+        self.assertEqual(suppressed_join_bucket(original, narrowed), 3)
+        self.assertIsNone(suppressed_join_bucket(narrowed, original))
