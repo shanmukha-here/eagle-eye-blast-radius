@@ -23,6 +23,8 @@ COPY query_sentinel.py memo_witness.py ./
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python query_sentinel.py
 COPY decision.py selector.py narrow.py fixture_reads.json long_gate.py parser_signal.py ./
 COPY observation_index.py value_observations.py values.z ./
+COPY reference_replay.py reference_reads.json ./
+RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python reference_replay.py build
 COPY incumbent/ ./incumbent/
 RUN ln -s ../replay_index.z incumbent/replay_index.z \
     && ln -s ../optimizer_inputs incumbent/optimizer_inputs

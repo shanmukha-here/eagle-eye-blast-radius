@@ -41,5 +41,7 @@ tools/*
 !observation_index.py
 !value_observations.py
 !values.z
+!reference_replay.py
+!reference_reads.json
 !memo_witness.py
 !parser_signal.py

@@ -22,6 +22,7 @@ from startup import Startup
 from narrow import Narrow
 from observation_index import ObservationIndex
 from parser_signal import unexecuted_return
+from reference_replay import ReferenceReplay
 from long_gate import LongGate
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details, bindings
@@ -197,6 +198,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     observation = ObservationIndex(impact, map_path.with_name("values.z"))
+    references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
     parser_bit = impact.details.miniatures.tests.get("parser", 0)
     parser_id = next((number for number, bit in scheduler.bits.items() if bit and bit == parser_bit), None)
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
@@ -231,7 +233,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                             old, reduced, mask, keep
                         )
                         before = incumbent.select(text)
-                    plan = gate.apply(text, scheduler.intersect(before, mask, keep), workspace,
+                    plan = references.apply(text, scheduler.intersect(before, mask, keep))
+                    plan = gate.apply(text, plan, workspace,
                                       legacy.last_seconds, legacy.last_mismatch,
                                       lambda: replay_body(impact, text), legacy.graph_changed)
                     if parser_id is not None and any(parser_id in group for group in plan):
