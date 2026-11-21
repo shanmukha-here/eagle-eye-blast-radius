@@ -241,7 +241,15 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                             old, reduced, mask, keep
                         )
                         before = incumbent.select(text)
-                    plan = references.apply(text, scheduler.intersect(before, mask, keep))
+                    plan = scheduler.intersect(before, mask, keep)
+                    # Padding that did not change the initial schedule cost is
+                    # not an observation. Replaying those IDs can load unrelated
+                    # class fixtures and make a cheap cohort expensive.
+                    observed = (before & mask) | keep
+                    active = {n for group in plan for n in group
+                              if not scheduler.bits[n] or scheduler.bits[n] & observed}
+                    replay_plan = scheduler.repack(active, plan)
+                    plan = references.apply(text, replay_plan)
                     plan = gate.apply(text, plan, workspace,
                                       legacy.last_seconds, legacy.last_mismatch,
                                       lambda: replay_body(impact, text), legacy.graph_changed)

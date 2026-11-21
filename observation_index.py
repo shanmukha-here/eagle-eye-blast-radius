@@ -5,7 +5,7 @@ import json
 import zlib
 from functools import lru_cache
 
-from impact import patched, split_diff, UnknownChange
+from impact import patched, split_diff, syntax, UnknownChange
 from refine import changed_fields
 from value_observations import SCALARS, input_mask, key, replacements
 
@@ -99,7 +99,7 @@ class ObservationIndex:
     @lru_cache(maxsize=96)
     def original(self, path):
         text = (self.base / path).read_text()
-        return text, ast.parse(text, path)
+        return text, syntax(path, text)
 
     @lru_cache(maxsize=1024)
     def observed_values(self, site):
@@ -116,12 +116,12 @@ class ObservationIndex:
                 return None
             if path not in self.details.lines:
                 return None
-            source, old = self.original(path)
+            source, (old, (outer, _), _) = self.original(path)
             modified = patched(source, hunks)
             external = (self.impact.files.get(path, {}).get(0, 0) |
                         self.details.flow.opaque | self.details.positions)
             try:
-                after = ast.parse(modified, path)
+                after, (revised_outer, _), _ = syntax(path, modified)
             except SyntaxError:
                 imports = self.details.imports.get(path, 0)
                 dialects = self.details.dialects.get(path, 0)
@@ -130,7 +130,7 @@ class ObservationIndex:
                 affected = (external | imports | dialects | self.references.get(path, 0) |
                             self.impact.visitors.get(path, 0))
                 return "syntax", affected
-            scalar = replacements(old, after)
+            scalar = replacements(old, after) if outer == revised_outer else []
             if scalar:
                 affected = external
                 for previous, revised, names, predicate in scalar:
@@ -145,6 +145,8 @@ class ObservationIndex:
                 compile(after, path, "exec", dont_inherit=True)
                 return "scalar", affected
 
+            if outer == revised_outer:
+                return None
             declarations = default_changes(old, after)
             if declarations:
                 affected = external
