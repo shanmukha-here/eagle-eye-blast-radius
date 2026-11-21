@@ -32,6 +32,7 @@ from long_gate import LongGate
 from tpcds_replay import QueryGate
 from receiver_edits import ReceiverEdits
 from registry_guard import changes_routing
+from precision import Precision
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details, bindings
 
@@ -209,6 +210,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     queries = QueryGate(map_path.parent, impact, scheduler, tests)
     receivers = ReceiverEdits(map_path.with_name("receiver.index"), impact)
+    precision = Precision(map_path.parent, impact, scheduler, queries.test)
     report = os.environ.get("BLAST_ASSERTION_REPORT") == "1"
 
     def emit(path, plan, beginning):
@@ -216,7 +218,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
                            busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
-                           **queries.stats)
+                           **queries.stats, **precision.stats)
             print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
@@ -235,14 +237,21 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         budget.remaining_patches = len(patches) - index
         beginning = seconds() if report else 0
         queries.stats = {}
+        precision.stats = {}
         before = mask = impact.full
         try:
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
                 plan = scheduler.intersect(before, mask)
             else:
                 text = path.read_bytes().decode("utf-8")
-                if hard_topology(text) or opaque_format(text) or changes_routing(impact, text):
+                if hard_topology(text) or opaque_format(text):
                     emit(path, scheduler.intersect(before, mask), beginning)
+                    continue
+                if changes_routing(impact, text):
+                    observed = precision.registry(text)
+                    plan = (scheduler.intersect(before, mask) if observed is None else
+                            json.loads(scheduler.schedule(observed, pad=False)))
+                    emit(path, plan, beginning)
                     continue
                 metadata = surface.select(text)
                 if addition(text) and metadata is None:
@@ -293,10 +302,10 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     observed = (before & mask) | keep
                     active = {n for group in plan for n in group
                               if not scheduler.bits[n] or scheduler.bits[n] & observed}
-                    replay_plan = scheduler.repack(active, plan)
+                    replay_plan, query_mask = precision.body(text, scheduler.repack(active, plan))
                     plan = references.apply(text, replay_plan)
                     if not legacy.graph_changed:
-                        plan = queries.apply(text, plan, workspace, budget.cap)
+                        plan = queries.apply(text, plan, workspace, budget.cap, query_mask)
                     plan = gate.apply(text, plan, workspace,
                                       legacy.last_seconds, legacy.last_mismatch,
                                       lambda: replay_body(impact, text), legacy.graph_changed)

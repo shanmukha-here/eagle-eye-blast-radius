@@ -48,7 +48,7 @@ class QueryGate:
         self.context = multiprocessing.get_context("fork")
         self.stats = {}
 
-    def checks(self, text):
+    def checks(self, text, observed=None):
         edits = split_diff(text)
         if len(edits) != 1:
             return None
@@ -84,6 +84,13 @@ class QueryGate:
             return None
         checks = []
         relevant = optimize | execute
+        unresolved = 0
+        if observed is not None:
+            # A query that reached the line in the independent full trace
+            # needs a complete result check if its stage is unresolved here.
+            unresolved = observed & ~relevant
+            execute |= unresolved
+            relevant = observed
         for i in range(relevant.bit_length()):
             bit = 1 << i
             if not relevant & bit:
@@ -93,9 +100,9 @@ class QueryGate:
                 return None
             checks.append((*row[0][0], bool(execute & bit)))
         checks.sort(key=lambda check: check[-1])
-        return checks, not optimize and path.startswith("sqlglot/executor/")
+        return checks, not (optimize or unresolved) and path.startswith("sqlglot/executor/")
 
-    def apply(self, text, workers, workspace, cpu_limit):
+    def apply(self, text, workers, workspace, cpu_limit, observed=None):
         chosen = {n for group in workers for n in group}
         if self.index is None or self.test not in chosen or "sqlglot" in sys.modules:
             return workers
@@ -105,7 +112,7 @@ class QueryGate:
         if cap < 0.35:
             return workers
         try:
-            attempt = self.checks(text)
+            attempt = self.checks(text, observed)
             if attempt is None:
                 return workers
             checks, executor_only = attempt

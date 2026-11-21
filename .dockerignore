@@ -68,3 +68,10 @@ tools/*
 !receiver_edits.py
 !receiver.index
 !registry_guard.py
+!registry_keys.py
+!precision.py
+!precision_body.py
+!precision_index.py
+!tools/trace_precision.py
+!tools/build_precision_index.py
+!tools/precision_startup.py

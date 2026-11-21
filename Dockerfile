@@ -31,6 +31,16 @@ COPY tools/build_query_gate.py /build_query_gate.py
 RUN PYTHONPATH=/app python /build_query_gate.py /app
 COPY receiver_edits.py receiver.index ./
 COPY registry_guard.py ./
+COPY precision.py precision_body.py precision_index.py registry_keys.py ./
+COPY tools/trace_precision.py tools/build_precision_index.py /precision-tools/
+COPY tools/precision_startup.py /precision-tools/sitecustomize.py
+RUN mkdir /precision-trace \
+    && cd /base \
+    && PRECISION_TRACE=/precision-trace PYTHONHASHSEED=0 PYTHON_CPU_COUNT=4 \
+       PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 PYTHONPATH=/precision-tools:/app \
+       python -B -m pytest -q --assert=plain -p no:cacheprovider -p trace_precision tests \
+    && PYTHONPATH=/app python -B /precision-tools/build_precision_index.py /precision-trace /app /base \
+    && rm -r /precision-trace
 COPY observation_index.py value_observations.py values.z values_eq.z ready_imports.json fixture_inputs.json ./
 COPY tools/build_observation_file.py /build_observation_file.py
 RUN PYTHONPATH=/app python /build_observation_file.py /app
