@@ -36,6 +36,9 @@ def optimized_sql(tree):
 
 def build():
     from sqlglot import __file__ as package
+    from memo_witness import record_hits
+
+    finish_trace = record_hits()
     package_root = str(Path(package).resolve().parent.parent) + "/"
     monitor = sys.monitoring
     tid = 3
@@ -64,6 +67,7 @@ def build():
     finally:
         monitor.set_events(tid, 0)
         monitor.free_tool_id(tid)
+        finish_trace()
     if len(snapshots) != 57:
         raise ValueError("incomplete TPC-DS fixture")
     STORE.write_text(json.dumps({"rows": rows, "boundary_files": sorted(observed)}))

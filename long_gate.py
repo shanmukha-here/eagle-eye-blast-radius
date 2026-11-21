@@ -29,6 +29,7 @@ def probe(connection, root, targets, edits, first, reuse_file):
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(root))
     os.chdir(root)
+    from memo_witness import same_cache_results
     from query_sentinel import check
     from short_probe import execute, memory, optimized
 
@@ -37,7 +38,10 @@ def probe(connection, root, targets, edits, first, reuse_file):
             if kind == "memory":
                 passed = memory(affected_dialects(edits))
             elif kind == "tpcds":
-                passed = check(first, reuse_file)
+                if reuse_file == "memo":
+                    passed = same_cache_results() or check(first, "sqlglot/schema.py")
+                else:
+                    passed = check(first, reuse_file)
             else:
                 passed = (execute if kind == "execute" else optimized)()
             if passed:

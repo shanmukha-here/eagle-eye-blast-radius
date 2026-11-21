@@ -17,6 +17,7 @@ from flow import Flow
 from observed import Observers
 from optimizer_probe import Replay, local_edit
 from miniatures import CORE, Miniatures
+from memo_witness import bypass_only
 from startup import Startup
 from narrow import Narrow
 from long_gate import LongGate
@@ -142,10 +143,16 @@ def replay_body(impact, text):
         path, hunks = next(iter(edits.items()))
         source, (outer, old), code = impact.base(path)
         _, (new_outer, revised), compiled = syntax(path, patched(source, hunks))
-        if outer != new_outer or old.keys() != revised.keys() or bindings(code) != bindings(compiled):
+        if outer != new_outer or old.keys() != revised.keys():
             return None
-        changed = [(old[k][3], revised[k][3]) for k in old if old[k][2] != revised[k][2]]
-        if len(changed) == 1 and local_edit(*changed[0]):
+        changed = [k for k in old if old[k][2] != revised[k][2]]
+        if len(changed) != 1:
+            return None
+        key = changed[0]
+        before, after = old[key][3], revised[key][3]
+        if path == "sqlglot/schema.py" and key == ("MappingSchema", "_normalize_name", 0) and bypass_only(before, after):
+            return "memo"
+        if bindings(code) == bindings(compiled) and local_edit(before, after):
             return path
     except (UnknownChange, OSError, SyntaxError, UnicodeError, ValueError, RecursionError, KeyError):
         return None

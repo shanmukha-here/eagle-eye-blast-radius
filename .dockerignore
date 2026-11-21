@@ -38,3 +38,4 @@ tools/*
 !incumbent/*.py
 !incumbent/observers.z
 !long_gate.py
+!memo_witness.py
