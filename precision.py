@@ -6,7 +6,7 @@ from impact import UnknownChange, patched, split_diff, syntax
 from miniatures import CORE
 from precision_body import evidence, footprint, range_mask
 from precision_index import PrecisionIndex
-from registry_keys import one_entry
+from registry_keys import literal_table, one_entry
 from risk_features import edit_lines
 
 
@@ -159,8 +159,29 @@ class Precision:
         self.stats["direct_body"] = mask.bit_count()
         return mask
 
-    def fixture_union(self, text):
-        """Union known fixture readers with exact ordinary-body observers."""
+    def dialect_table(self, path, hunks, recovery):
+        """Include all observed users of a dialect owning an isolated literal table."""
+        details = self.impact.details
+        dialect = details.dialects.get(path, 0)
+        if not dialect or recovery.imports is None:
+            return None
+        source, _, _ = self.impact.base(path)
+        modified = patched(source, hunks)
+        before = syntax(path, source)[0]
+        after = syntax(path, modified)[0]
+        table = literal_table(before, after)
+        if not table or not self.index.mask(f"T:{path}:{table}"):
+            return None
+        observed, _ = recovery.observer_mask(path, after)
+        scope = (observed | dialect | recovery.imports.mask(path) | details.imports.get(path, 0)
+                 | self.index.mask(f"W:{path}:{table}") | self.protected((path,))
+                 | getattr(details.flow, "reflect", 0))
+        if scope == self.impact.full or not details.import_valid(path, modified):
+            return None
+        return scope
+
+    def fixture_union(self, text, recovery):
+        """Union observed fixture readers with proven body and dialect scopes."""
         if self.index is None or "diff --git a/tests/fixtures/" not in text:
             return None
         try:
@@ -169,6 +190,7 @@ class Precision:
                 return None
             files = 0
             changes = {}
+            declaration = 0
             for section in re.split(r"(?=^diff --git )", text, flags=re.MULTILINE)[1:]:
                 path, = split_diff(section)
                 if path.startswith("tests/fixtures/") and path.endswith(".sql"):
@@ -181,8 +203,13 @@ class Precision:
                 else:
                     footprint_of_section = footprint(self.impact, section, package_body=True)
                     if footprint_of_section is None:
-                        return None
-                    changes.update(footprint_of_section)
+                        if declaration:
+                            return None
+                        declaration = self.dialect_table(path, edits[path], recovery)
+                        if declaration is None:
+                            return None
+                    else:
+                        changes.update(footprint_of_section)
             if not files or not changes:
                 return None
             for path, records in changes.items():
@@ -193,6 +220,6 @@ class Precision:
             observed = changed | anchors | control | branch | outside
             if not observed:
                 return None
-            return files | observed | self.protected(changes)
+            return files | observed | declaration | self.protected(changes)
         except (OSError, SyntaxError, UnicodeError, UnknownChange, ValueError, RecursionError):
             return None

@@ -2,7 +2,7 @@ import ast
 
 from precision_body import body_regions, local_bindings
 from precision_index import PrecisionIndex, build
-from registry_keys import one_entry
+from registry_keys import literal_table, one_entry
 from long_gate import LongGate
 
 
@@ -40,6 +40,16 @@ def test_dispatch_factory_only_builds_a_closure(tmp_path):
     source = source.replace("    return handler", "    activate(flag)\n    return handler")
     revised = source.replace("factory(True)", "factory(False)")
     assert one_entry(tmp_path, "sqlglot/example.py", source, revised) is None
+
+
+def test_literal_table_accepts_one_class_setting_without_other_effects():
+    before = "class Parent:\n    NUMERIC_ESCAPES = {'a': (16, 2, 2, 255)}\n"
+    old = ast.parse(before)
+    revised = before.replace("'a'", "'b'")
+    assert literal_table(old, ast.parse(revised)) == "Parent.NUMERIC_ESCAPES"
+    assert literal_table(old, ast.parse(revised + "setup()\n")) is None
+    assert literal_table(old, ast.parse(revised.replace("255", "configure()"))) is None
+    assert literal_table(old, ast.parse(revised.replace("'b':", "**"))) is None
 
 
 def test_local_bindings_excludes_global_shadowing_and_frame_reads():

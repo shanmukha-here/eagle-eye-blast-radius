@@ -298,7 +298,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 skipped.update(body_skips)
             selected = (extra if replace else selected | extra) - skipped
             plan = scheduler.repack(selected, plan)
-            precise = precision.fixture_union(text)
+            precise = precision.fixture_union(text, recovery)
             if precise is not None:
                 narrowed = scheduler.repack(set(scheduler.numbers(precise)), plan)
                 if scheduler.cost(narrowed) < scheduler.cost(plan):

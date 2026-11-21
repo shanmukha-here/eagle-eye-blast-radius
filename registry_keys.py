@@ -115,3 +115,30 @@ def one_entry(root, path, source, after):
             return name, key.value
         right.values[i] = b
     return None
+
+
+def literal_table(before, after):
+    """Identify one class dispatch table made entirely of literals."""
+    original = ast.dump(before)
+    revisited = dict(tables(after.body))
+    for owner, left in tables(before.body):
+        right = revisited.get(owner)
+        if "." not in owner or right is None or ast.dump(left) == ast.dump(right):
+            continue
+        if not all(isinstance(node.value, ast.Dict) for node in (left, right)):
+            continue
+        if any(key is None or not isinstance(key, ast.Constant) or not isinstance(key.value, str)
+               for node in (left, right) for key in node.value.keys):
+            continue
+        revised = right.value
+        try:
+            for node in (left.value, revised):
+                ast.literal_eval(node)
+            right.value = left.value
+            if ast.dump(after) == original:
+                return owner
+        except (ValueError, TypeError):
+            continue
+        finally:
+            right.value = revised
+    return None
