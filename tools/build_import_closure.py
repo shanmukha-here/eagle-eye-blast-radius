@@ -73,11 +73,27 @@ def main(root, out):
 
     consumers = defaultdict(set)
     functions = defaultdict(int)
+    members = defaultdict(int)
     for name, path in modules.items():
         package = name if path.endswith("/__init__.py") else name.rpartition(".")[0]
         scanner = Imports(package, modules)
         tree = ast.parse((root / path).read_bytes(), path)
         scanner.visit(tree)
+        lines = details["lines"].get(path, {})
+        is_test = path.startswith("tests/")
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                member = node.attr
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.isidentifier():
+                member = node.value
+            else:
+                continue
+            recorded = members["attr:" + member]
+            if is_test:
+                recorded |= observed.get(path, 0)
+            for line in range(node.lineno, node.end_lineno + 1):
+                recorded |= pool[lines.get(str(line), 0)]
+            members["attr:" + member] = recorded
         for imported in scanner.result - {path}:
             consumers[imported].add(path)
         _, declarations = structure(tree)
@@ -98,7 +114,8 @@ def main(root, out):
             seen.update(following)
             queue.extend(following)
         rows[path] = mask
-    build(out / "import_closure.index", rows | functions, (len(base["ids"]) + 7) // 8)
+    build(out / "import_closure.index", rows | functions | members | {"!attr_references": 1},
+          (len(base["ids"]) + 7) // 8)
     print(f"indexed {len(rows)} transitive module consumers", flush=True)
 
 

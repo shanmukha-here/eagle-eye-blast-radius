@@ -61,10 +61,16 @@ class Recovery:
             return broad, False
         if any(kind in ("class", "other") for _, _, kind in edits):
             return broad, False
-        if len(edits) == 1 and edits[0] not in previous and edits[0][2] == "function":
-            inert = self.inert_method(path, after, *edits[0][:2])
-            if inert is not None:
-                return inert, True
+        if len(edits) == 1 and edits[0][2] == "function":
+            owner, member, _ = edit = edits[0]
+            if edit not in previous:
+                inert = self.inert_method(path, after, owner, member)
+                if inert is not None:
+                    return inert, True
+            if edit not in current:
+                readers = self.removed_method(path, owner, member)
+                if readers is not None:
+                    return readers, True
         details = self.impact.details
         module = path.removesuffix(".py").replace("/", ".")
         observed = 0
@@ -97,6 +103,27 @@ class Recovery:
             direct &= bool(reads | reach) and kind in ("function", "assignment") and not member.startswith("__")
             observed |= reads | reach or classes or broad
         return observed or broad, direct and bool(observed)
+
+    def removed_method(self, path, owner, name):
+        """Combine qualified call, namespace and member-read observations."""
+        if not owner or not self.imports.mask("!attr_references"):
+            return None
+        module = path.removesuffix(".py").replace("/", ".")
+        tag = f"{module}:{owner}"
+        if not self.receivers.bits("plain:" + tag):
+            return None
+        before = syntax(path, self.impact.base(path)[0])[0]
+        cls = dict(classes(before.body)).get(owner)
+        if cls is None or not any(getattr(node, "name", None) == name and plain_method(node)
+                                  for node in cls.body):
+            return None
+        details = self.impact.details
+        return (self.imports.mask(f"call:{path}:{owner}.{name}") |
+                self.imports.mask("attr:" + name) |
+                self.receivers.bits(f"r:{tag}:{name}") | self.receivers.bits(f"r:{tag}:*") |
+                details.access.seen.get(f"field:{path}:{owner}:{name}", 0) |
+                details.flow.opaque | getattr(details.flow, "reflect", 0) |
+                self.impact.files.get(path, {}).get(0, 0))
 
     def inert_method(self, path, tree, owner, name):
         """Track namespace readers for a plain, previously unreferenced member."""
