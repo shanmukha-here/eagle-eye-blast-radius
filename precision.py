@@ -152,12 +152,13 @@ class Precision:
         changes = footprint(self.impact, text)
         if changes is None or any(anchors for sites in changes.values() for _, _, (_, anchors, _) in sites):
             return None
-        _, changed, _, control, branch, _, _ = evidence(self.index, changes)
-        mask = (changed | control | branch) | self.protected(changes)
+        _, changed, _, control, branch, outside, queries = evidence(self.index, changes)
+        protected = self.protected(changes)
+        mask = changed | control | branch | protected
         if mask.bit_count() > 128:
             return None
         self.stats["direct_body"] = mask.bit_count()
-        return mask
+        return mask, None if outside or protected & self.query_bit else queries
 
     def dialect_table(self, path, hunks, recovery):
         """Include all observed users of a dialect owning an isolated literal table."""

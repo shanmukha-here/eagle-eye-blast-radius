@@ -412,9 +412,13 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 direct = observation.edit(text) if metadata is None else ("metadata", metadata)
                 local = precision.local_plan(text) if not direct else None
                 if local is not None:
-                    plan = scheduler.plan(local)
+                    selected, queries_observed = local
+                    plan = scheduler.plan(selected)
                     with PatchWorkspace(base.resolve(), text) as workspace:
-                        plan = long_cases.apply(text, plan, workspace, budget.cap)
+                        plan = queries.apply(text, plan, workspace, budget.cap, queries_observed)
+                        attempted = queries.stats.get("tpcds_queries")
+                        only = long_cases.tests.keys() - {queries.test} if attempted else None
+                        plan = long_cases.apply(text, plan, workspace, budget.cap, only=only)
                         if plan and precision.short_certificate(text):
                             cpu = seconds() if report else 0.0
                             before_count = sum(map(len, plan))
