@@ -8,6 +8,8 @@ import marshal
 from functools import lru_cache
 from types import CodeType
 
+from reach import nested_edit, witnessed_bypass
+
 JUMPS = getattr(dis, "hasjump", None) or (set(dis.hasjrel) | set(dis.hasjabs))
 
 
@@ -94,6 +96,7 @@ class Flow:
         self.pool = [int(x, 16) for x in data["pool"]]
         self.opaque = int(data["opaque"], 16) | int(data.get("reflect", "0"), 16)
         self.types = data.get("types", {})
+        self.none_safe = set()
         self.files = set(data["files"])
 
     def equality(self, path, old, new):
@@ -119,14 +122,18 @@ class Flow:
         for i, expr in enumerate((a.left, a.comparators[0])):
             if isinstance(expr, ast.Constant) and expr.value is None:
                 other = types[1-i]
-                return bool(other) and all(t == "identity" or t.startswith(("enum:", "builtin:")) for t in other)
+                resolved = f"{path}:{a.lineno}:{a.col_offset}:{1-i}" in self.none_safe
+                return bool(other) and all(t == "identity" or t.startswith(("enum:", "builtin:"))
+                                           or (resolved and t == "unresolved") for t in other)
         return len(types[0]) == 1 and types[0] == types[1] and types[0][0].startswith("enum:")
 
-    def selection(self, path, old_module, new_module, key, old_scope, new_scope, uncalled=False):
+    def selection(self, path, old_module, new_module, key, old_scope, new_scope, uncalled=False, line_users=None):
         pair = code_pair(old_module, new_module, key, old_scope, new_scope)
         if pair is None:
             return None
-        old, new = pair
+        old, new = nested_edit(*pair)
+        if old is not pair[0]:
+            uncalled = False
         name = f"{old.co_firstlineno}:{old.co_qualname}:{signature(old)}"
         ranges = self.code.get(path, {}).get(name)
         if not ranges:
@@ -140,14 +147,29 @@ class Flow:
             return None
         offsets = changed_offsets(old, new)
         if offsets is None:
-            return None
-        mask = self.opaque
-        for offset in offsets:
+            if old is pair[0]:
+                return None
+            # The surrounding factory constructs an unchanged signature and
+            # closure. Only the nested body and code-object observers can see this edit.
+            mask = self.opaque
+            for _, _, index in ranges:
+                mask |= self.pool[index]
+            return mask
+
+        def observed(offset):
             for start, end, i in ranges:
                 if start <= offset <= end:
-                    mask |= self.pool[i]
-                    break
-            else:
-                # An offset with no trusted observation cannot certify a test.
-                return None
+                    return self.pool[i]
+            return 0
+
+        mask = self.opaque
+        for offset in offsets:
+            here = observed(offset)
+            if not here:
+                if line_users is None:
+                    return None
+                here = witnessed_bypass(old, offset, observed, line_users)
+                if here is None:
+                    return None
+            mask |= here
         return mask

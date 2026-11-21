@@ -6,6 +6,8 @@ import io
 import subprocess
 import sys
 import tokenize
+
+from observed import enum_edit
 from pathlib import Path
 
 
@@ -270,12 +272,18 @@ class Details:
 
     def fields(self, path, source, modified, readers, visitors):
         fields = changed_fields(source, modified)
+        if not fields and getattr(self, "observers", None):
+            fields = enum_edit(source, modified)
         if not fields:
             return self.full
         selected = readers
         for owner, field in fields:
             identifier = f"{path}:{owner}"
-            if path.startswith("sqlglot/expressions/") and field == "arg_types":
+            observers = getattr(self, "observers", None)
+            observed = observers.users(path, owner, field, source, modified) if observers else None
+            if observed is not None and observed != self.full:
+                selected |= observed | self.flow.opaque
+            elif path.startswith("sqlglot/expressions/") and field == "arg_types":
                 if identifier not in self.types or identifier not in self.references:
                     return self.full
                 selected |= self.types[identifier] | self.references[identifier]

@@ -72,6 +72,24 @@ def rounded(value):
     return value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
 
+def historical_forecast(local, anchors, realized_fraction):
+    """Interpolate measured board totals. Discount gains outside the measured range."""
+    if not anchors or not 0 < realized_fraction <= 1:
+        raise ValueError("invalid historical calibration")
+    grouped = {}
+    for measured, board in anchors:
+        grouped.setdefault(Decimal(str(measured)), []).append(Decimal(str(board)))
+    points = sorted((x, statistics.median(y)) for x, y in grouped.items())
+    x0, y0 = points[0]
+    if local <= x0:
+        return y0 + (local - x0) * realized_fraction
+    for x, y in points[1:]:
+        if local <= x:
+            return y0 + (local - x0) * (y - y0) / (x - x0)
+        x0, y0 = x, y
+    return y0 + local - x0
+
+
 @contextlib.contextmanager
 def container(name, options):
     run("docker", "create", "--name", name, *options, stdout=subprocess.DEVNULL)
@@ -255,8 +273,18 @@ def evaluate(config, confdir, archive, work, sha):
             return
         for label, title in (("proxy", "Predicted board"), ("shadow", "Disjoint batch sensitivity")):
             if label in results:
-                print(f"{title} = {rounded(results[label] * ratio)} s "
-                      f"({label} {results[label]} s x median matched ratio {ratio:.6f})")
+                scaled = rounded(results[label] * ratio)
+                calibration = config.get("historical_response", {})
+                if label in calibration:
+                    fraction = Decimal(str(calibration["realized_fraction"]))
+                    estimate = historical_forecast(results[label], calibration[label], fraction)
+                    print(f"{label} median-ratio estimate = {scaled} s "
+                          f"({results[label]} s x {ratio:.6f})")
+                    print(f"{title} = {rounded(estimate)} s "
+                          f"(historical response, gain fraction {fraction:.4f})")
+                else:
+                    print(f"{title} = {scaled} s "
+                          f"({label} {results[label]} s x median matched ratio {ratio:.6f})")
         return
     public_ratio, blind_ratio = ratios(ledger)
     if public_ratio is None:

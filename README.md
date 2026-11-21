@@ -77,6 +77,27 @@ PROBE_OUTPUT="$TRACES/cases" PYTHONPATH="$TRACES/cases-start:$TOOLS:$ENTRY:$PWD"
 python "$TOOLS/make_replay_index.py" "$TRACES/cases" "$ENTRY/replay_index.z"
 ```
 
+## Class values and branch reachability
+
+A separate clean profile observes plain string-valued enums derived from sqlglot’s AutoName. Reading a member value, reverse lookup with the old or new string, and unclassified introspection can each make a test relevant. The selector checks the complete old and new declarations for name or value collisions and retains the cold-import check. Parser, generator and tokenizer configuration flags use observations of class and instance reads, inherited fields and reflective access. A class definition observed by the profiler is required before an absent read can narrow selection. Reads during import cover all tests.
+
+A nested function edit can use the nested function’s callers when its enclosing factory constructs the same closure and signature. To exclude a missing instruction on a conditional path, the selector requires observations at the branch and its alternative and corroborates the skipped arm against the independent line trace. A mixed change to a single production file and existing fixtures can use the union of the fixture readers and the production reachability estimate. The query replay shortcut remains limited to a single production edit.
+
+To rebuild the additional map, use the same clean pinned source, environment and PYTHONHASHSEED as the instruction trace. Run each plugin separately, including its sitecustomize startup in spawned workers.
+
+```sh
+for plugin in trace_components trace_enum trace_guards; do
+    mkdir -p "$TRACES/$plugin" "$TRACES/$plugin-start"
+    echo "from $plugin import install; install()" > "$TRACES/$plugin-start/sitecustomize.py"
+    TRACE_OUTPUT="$TRACES/$plugin" PYTHONPATH="$TRACES/$plugin-start:$TOOLS:$ENTRY:$PWD" \
+        python -m pytest -q -p "$plugin" -p pytest_timeout --timeout=180
+done
+python "$TOOLS/make_observers.py" "$TRACES/trace_components" "$TRACES/trace_enum" \
+    "$TRACES/trace_guards" "$ENTRY/base.z" "$ENTRY/details.z" "$ENTRY/observers.z"
+```
+
+The operand trace recognizes equality methods that return before inspecting values of a different concrete type. Every formerly unresolved test context must be covered by the new observation. Changes in the comparison implementation’s own source file keep the previous rule.
+
 ## Local leaderboard
 
 Run `./localboard.py` to score HEAD or `./localboard.py <revision>` to replay an earlier commit. It builds the Git archive, runs the exact image three times per dataset and prints the median score and calibrated board prediction. It needs a Linux Docker host with systemd and cgroup v2. A paused sibling holds open a private cgroup slice so the harness can measure CPU across the full container lifetime, including subprocesses.
@@ -84,3 +105,5 @@ Run `./localboard.py` to score HEAD or `./localboard.py <revision>` to replay an
 Supply an external `--config` JSON file, defaulting to `../localboard.json`. Its `kit` field points to the official scorer directory and `scorer_sha256` pins the scorer file. Each entry under `datasets` has a `path` and a `sha256` from `localboard.fingerprint`. When supplied, the `proxy` dataset supplies the prediction and `shadow` gives a disjoint sensitivity check. The four-column ledger table headed `Matched commit` lists the historical commit, matched local seconds, official board seconds and ratio. Without a proxy, `public` and `blind` use their historical ratios. Extra datasets are reported separately. The optional `record_datasets` list retains the three raw outputs for each named set in the private Docker-host directory. The `calibration` field names the external Markdown ledger. Its original seven table columns are commit, public local seconds, blind local seconds, predicted seconds at submission, actual board seconds, public ratio and blind ratio. Ratios are recomputed from the numeric scores. Data and calibration records stay outside the image and checkout.
 
 An optional SSH relay config accepts `ssh_host`, `remote_dir`, `calibration` and an optional `ssh` executable. It stages the frozen archive, harness and current ledger in a temporary directory on the configured Docker host. The host's dataset config is read from `remote_dir/localboard.json`.
+
+An optional external config field `historical_response` holds separate local and board score pairs for `proxy` and `shadow`, plus a `realized_fraction` between zero and one. The simulator prints both the median-ratio estimate and the forecast fitted to these historical measurements. Below the best measured local score it credits the specified fraction of additional local savings.

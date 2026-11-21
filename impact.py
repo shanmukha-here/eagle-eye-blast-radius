@@ -175,7 +175,7 @@ class Impact:
             compile(source, path, "exec", dont_inherit=True),
         )
 
-    def file_mask(self, path, hunks, single=False):
+    def file_mask(self, path, hunks, single=False, fixture_mix=False):
         rows = self.files.get(path, {})
         if path.startswith("tests/fixtures/"):
             return rows.get(0, self.full)
@@ -232,13 +232,13 @@ class Impact:
                 else fallback
             )
         flow_mask = None
-        if flow and single and len(affected) == 1:
+        if flow and (single or fixture_mix) and len(affected) == 1:
             key = affected[0]
-            if flow.equality(path, scopes[key][3], new_scopes[key][3]):
+            if single and flow.equality(path, scopes[key][3], new_scopes[key][3]):
                 flow_mask = flow.opaque
             else:
                 uncalled = not any(scopes[key][0] <= line <= scopes[key][1] for line in rows)
-                flow_mask = flow.selection(path, original_code, updated_code, key, scopes[key], new_scopes[key], uncalled)
+                flow_mask = flow.selection(path, original_code, updated_code, key, scopes[key], new_scopes[key], uncalled, self.details.lines.get(path))
         selected = readers
         refine = self.details and bindings(original_code) == bindings(updated_code)
         for key in affected:
@@ -276,8 +276,15 @@ class Impact:
                 if addition is not None:
                     return self.details.access.addition(self.root, *addition, self.full)
             edits = split_diff(patch)
+            # Fixture files are also covered by their original readers. For one
+            # production edit plus fixtures, an unselected execution must follow
+            # the old path up to its first changed instruction or fixture read.
+            fixture_mix = (len(edits) > 1
+                           and sum(p.startswith("sqlglot/") and p.endswith(".py") for p in edits) == 1
+                           and all(p.startswith(("sqlglot/", "tests/fixtures/")) for p in edits)
+                           and sum(p.startswith("sqlglot/") for p in edits) == 1)
             for path, hunks in edits.items():
-                selection |= self.file_mask(path, hunks, single=len(edits) == 1)
+                selection |= self.file_mask(path, hunks, single=len(edits) == 1, fixture_mix=fixture_mix)
                 if selection == self.full:
                     break
             return selection

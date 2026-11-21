@@ -9,6 +9,7 @@ from pathlib import Path
 
 from dependencies import Dependencies
 from flow import Flow
+from observed import Observers
 from optimizer_probe import Replay
 from impact import Impact
 from refine import Details
@@ -66,6 +67,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     access = Dependencies(json.loads(zlib.decompress(map_path.with_name("access.z").read_bytes())))
     impact = Impact(base, profile, Details(data_map, profile["ids"], base, access))
     impact.details.flow = Flow(json.loads(zlib.decompress(map_path.with_name("flow.z").read_bytes())))
+    impact.details.observers = Observers(json.loads(zlib.decompress(map_path.with_name("observers.z").read_bytes())))
+    impact.details.flow.none_safe = impact.details.observers.none_safe
     scheduler = Scheduler(tests, profile["ids"])
     impact.details.replay = Replay(profile["ids"], base, map_path.parent)
     impact.scheduler = scheduler

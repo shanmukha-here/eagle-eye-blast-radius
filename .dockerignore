@@ -16,3 +16,6 @@
 !tools/
 tools/*
 !tools/build_replays.py
+!reach.py
+!observed.py
+!observers.z
