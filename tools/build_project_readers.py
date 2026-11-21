@@ -27,8 +27,8 @@ def main(base, directory):
     metadata_reads = {"__annotations__", "__doc__", "co_consts", "get_annotations",
                       "get_type_hints", "getdoc", "getcomments", "getsource",
                       "signature", "DocTestSuite", "DocTestFinder"}
-    for directory in ("sqlglot", "tests"):
-        for source in sorted((base / directory).rglob("*.py")):
+    for source_dir in ("sqlglot", "tests"):
+        for source in sorted((base / source_dir).rglob("*.py")):
             name = source.relative_to(base).as_posix()
             tree = ast.parse(source.read_bytes(), filename=name)
             nodes = list(ast.walk(tree))
