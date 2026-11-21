@@ -83,7 +83,8 @@ def worker(send, root, index, tasks, cap):
                 if not path.startswith(prefix + "sqlglot/") or not path.endswith((".py", ".pyc")):
                     state.add("files")
             elif event.startswith(("os.putenv", "os.unsetenv")):
-                state.add("environment")
+                if os.fsdecode(args[0]) != "PYTEST_CURRENT_TEST":
+                    state.add("environment")
 
         sys.addaudithook(audit)
         for owner, attr, reason in ((os, "getenv", "environment"),

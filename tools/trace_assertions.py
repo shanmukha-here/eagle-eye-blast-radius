@@ -156,7 +156,8 @@ def audit(event, args):
                 return
         frames[-1][1].add("files")
     elif event.startswith(("os.putenv", "os.unsetenv")):
-        frames[-1][1].add("environment")
+        if os.fsdecode(args[0]) != "PYTEST_CURRENT_TEST":
+            frames[-1][1].add("environment")
 
 
 def observed(name, function):
