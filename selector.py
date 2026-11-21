@@ -324,6 +324,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 if insured is not plan:
                     precision.stats["insurance_tests"] = sum(map(len, insured)) - sum(map(len, plan))
                     plan = insured
+        # Measure the cost of schedules that contain the whole manifest.
+        if sum(map(len, plan)) == len(scheduler.durations):
+            plan = []
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
