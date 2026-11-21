@@ -26,7 +26,7 @@ from memo_witness import bypass_only
 from startup import Startup
 from narrow import Narrow
 from observation_index import ObservationIndex
-from surface import Surface
+from surface import Surface, filesystem_change
 from parser_signal import unexecuted_return
 from reference_replay import ReferenceReplay
 from long_gate import LongGate
@@ -241,7 +241,20 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             else:
                 text = path.read_text("utf-8")
                 if hard_topology(text):
-                    emit(path, scheduler.intersect(before, mask), beginning)
+                    plan = scheduler.intersect(before, mask)
+                    try:
+                        operation = filesystem_change(text, base)
+                        if operation is not None and operation[1] is None:
+                            affected = surface.select(text)
+                            if affected is not None:
+                                candidate = json.loads(scheduler.schedule(affected, pad=False))
+                                if scheduler.cost(candidate) + 3500 < scheduler.cost(plan):
+                                    tested = verify.collect({}, candidate, remove=(operation[0],))
+                                    if tested is not None:
+                                        plan = tested
+                    except (OSError, UnicodeError, UnknownChange, ValueError, SyntaxError, RecursionError):
+                        pass
+                    emit(path, plan, beginning)
                     continue
                 metadata = surface.select(text)
                 if addition(text) and metadata is None:

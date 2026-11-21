@@ -14,10 +14,10 @@ from impact import split_diff, patched, syntax, UnknownChange
 from optimizer_probe import cost
 
 
-def overlay(base, root, edits, validate=True):
+def overlay(base, root, edits, validate=True, remove=()):
     """Only copy modified files; symlink untouched subtrees from the clean pin."""
     expanded = set()
-    changed = {Path(name) for name in edits}
+    changed = {Path(name) for name in (*edits, *remove)}
 
     def expand(directory):
         for item in (base / directory).iterdir():
@@ -32,7 +32,7 @@ def overlay(base, root, edits, validate=True):
                     (cached / bytecode.name).symlink_to(bytecode)
         expanded.add(directory)
 
-    for name, hunks in edits.items():
+    for name in (*edits, *remove):
         src = base / name
         if not src.is_file() or not name.startswith(("sqlglot/", "tests/")):
             raise ValueError("unsupported change")
@@ -49,7 +49,9 @@ def overlay(base, root, edits, validate=True):
             expand(current)
         dest = root / name
         dest.unlink()
-        content = patched(src.read_text(), hunks)
+        if name in remove:
+            continue
+        content = patched(src.read_text(), edits[name])
         if validate and name.endswith(".py"):
             syntax(name, content)
         dest.write_text(content)

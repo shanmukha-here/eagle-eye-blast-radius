@@ -74,9 +74,14 @@ class Surface:
         if old:
             if not (old in self.impact.files or old in details.lines or old in details.imports):
                 return None
+            importers = self.mask("importers:" + old)
+            if importers is None:
+                return None
             observed |= (details.imports.get(old, 0) | details.dialects.get(old, 0) |
                          self.impact.visitors.get(old, 0) | self.impact.files.get(old, {}).get(0, 0) |
-                         self.references.get(old, 0))
+                         self.references.get(old, 0) | importers |
+                         access.seen.get("module:" + old[:-3].replace("/", "."), 0) |
+                         access.seen.get("path:" + Path(old).name, 0))
         if new:
             directory, _, basename = new.rpartition("/")
             name = Path(new).stem

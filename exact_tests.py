@@ -127,21 +127,24 @@ class ExactTests:
         return plan
 
     def collection(self, patch, plan):
-        cap = min(self.collection_remaining, self.deadline - time.monotonic(), 3.4)
-        if cap < 0.5:
-            return None
         try:
             edits = split_diff(patch)
         except UnknownChange:
             return None
-        ids = self.run(edits, [], cap, collect=True)
+        return self.collect(edits, plan)
+
+    def collect(self, edits, plan, remove=()):
+        cap = min(self.collection_remaining, self.deadline - time.monotonic(), 3.4)
+        if cap < 0.5:
+            return None
+        ids = self.run(edits, [], cap, collect=True, remove=remove)
         if ids is None:
             return None
         present = set(ids)
         failed = {n for n, node in self.nodes.items() if node not in present}
         return self.scheduler.repack(failed | {n for w in plan for n in w}, plan)
 
-    def run(self, edits, names, cap, collect):
+    def run(self, edits, names, cap, collect, remove=()):
         cap = getattr(self, "cpu_limit", float)(cap)
         if cap < (0.5 if collect else 0.23):
             return None
@@ -162,7 +165,7 @@ class ExactTests:
                     return None
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                overlay(self.root, root, edits, validate=not collect)
+                overlay(self.root, root, edits, validate=not collect, remove=remove)
                 with contextlib.ExitStack() as stack:
                     recv, send = self.ctx.Pipe(duplex=False)
                     stack.enter_context(recv)
