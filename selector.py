@@ -1,5 +1,4 @@
 """Schedule numbered tests using the impact map of the pinned source tree."""
-import ast
 import json
 import math
 import sys
@@ -21,7 +20,7 @@ from miniatures import CORE, Miniatures
 from startup import Startup
 from narrow import Narrow
 from long_gate import LongGate
-from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, structure
+from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details
 
 
@@ -107,7 +106,7 @@ def needs_parser_guard(impact, text):
             if path not in CORE and not path.startswith("sqlglot/executor/"):
                 continue
             source, (outer, scopes), _ = impact.base(path)
-            new_outer, changed = structure(ast.parse(patched(source, hunks)))
+            _, (new_outer, changed), _ = syntax(path, patched(source, hunks))
             if outer != new_outer or scopes.keys() != changed.keys():
                 if path in CORE:
                     return True
@@ -146,6 +145,13 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     incumbent.details.flow.none_safe = incumbent.details.observers.none_safe
     incumbent.details.replay = IncumbentReplay(profile["ids"], base, legacy)
     incumbent.scheduler = scheduler
+    incumbent.base = impact.base
+    legacy_import = incumbent.details.import_valid
+
+    def shared_import(path, source):
+        return (legacy_import if path.endswith("/__init__.py") else impact.details.import_valid)(path, source)
+
+    incumbent.details.import_valid = shared_import
     patches = sorted((data / "commits").glob("*.patch"))
     narrow = Narrow(impact, map_path.parent)
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
@@ -158,8 +164,10 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         if time.monotonic() < deadline and path.stat().st_size <= 1_000_000:
             try:
                 text = path.read_text("utf-8")
-                before = incumbent.select(text)
                 mask = execution.refine(text, narrow.select(text, impact.select(text)))
+                # An empty emitted plan is its own intersection.
+                if scheduler.schedule(mask) != "[]":
+                    before = incumbent.select(text)
                 # Preserve the newer parser safeguard for shared grammar edits
                 # and early returns that may disrupt executor worker lifetime.
                 parser = impact.details.miniatures.tests.get("parser", 0)

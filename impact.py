@@ -44,6 +44,7 @@ def new_source(patch):
     return path, "\n".join(line[1:] for line in added) + "\n"
 
 
+@lru_cache(maxsize=16)
 def split_diff(text):
     """Accept same-path textual unified diffs. Anything else uses all tests."""
     lines = text.splitlines()
@@ -102,7 +103,12 @@ def split_diff(text):
 
 
 def patched(source, hunks):
-    original = source.splitlines()
+    return apply_hunks(source, tuple((i, j, tuple(old), tuple(new)) for i, j, old, new in hunks))
+
+
+@lru_cache(maxsize=16)
+def apply_hunks(source, hunks):
+    original = tuple(source.splitlines())
     result = []
     offset = 0
     for start, new_start, old, new in hunks:
@@ -125,6 +131,7 @@ def structure(tree):
     """Separate function bodies from the definitions executed at import time."""
     functions = {}
     occurrences = {}
+    restore = []
 
     def visit(node, path):
         if isinstance(node, (*FUNCTION, ast.Lambda)):
@@ -136,6 +143,7 @@ def structure(tree):
             # Overloads, setters, and dispatch-table lambdas can share a name.
             # The unchanged outer syntax guarantees the same traversal order.
             key = (*group, ordinal)
+            restore.append((node, node.body))
             if is_lambda:
                 first = node.lineno
                 body = node.body
@@ -150,8 +158,20 @@ def structure(tree):
         for child in ast.iter_child_nodes(node):
             visit(child, child_path)
 
-    visit(tree, ())
-    return ast.dump(tree), functions
+    try:
+        visit(tree, ())
+        return ast.dump(tree), functions
+    finally:
+        for node, body in restore:
+            node.body = body
+
+
+@lru_cache(maxsize=24)
+def syntax(path, source):
+    """Share the parsed and compiled source across selectors and fallback checks."""
+    tree = ast.parse(source, path)
+    code = compile(tree, path, "exec", dont_inherit=True)
+    return tree, structure(tree), code
 
 
 def bypasses_executor_result(old, new):
@@ -179,11 +199,8 @@ class Impact:
     @lru_cache(maxsize=96)
     def base(self, path):
         source = (self.root / path).read_text("utf-8")
-        return (
-            source,
-            structure(ast.parse(source)),
-            compile(source, path, "exec", dont_inherit=True),
-        )
+        _, scopes, code = syntax(path, source)
+        return source, scopes, code
 
     def check_startup(self, mask):
         # An import edit can affect interpreter-wide timing. The scaled parser
@@ -213,21 +230,20 @@ class Impact:
                 and Path(path).name.startswith("test_")
             )
             try:
-                compile(modified, path, "exec", dont_inherit=True)
+                _, after, _ = syntax(path, modified)
             except SyntaxError:
                 return grouped if numbered_module and simple_collection(source) else self.full
             if numbered_module and appended_failure(source, modified):
                 return grouped
             return self.details.test_body(
-                path, original, structure(ast.parse(modified))
+                path, original, after
             )
         if not path.startswith("sqlglot/") or not path.endswith(".py") or not rows:
             return self.full
         source, (skeleton, scopes), original_code = self.base(path)
         modified = patched(source, hunks)
         # Compilation also detects scoping errors that ast.parse alone accepts.
-        updated_code = compile(modified, path, "exec", dont_inherit=True)
-        updated, new_scopes = structure(ast.parse(modified))
+        new_tree, (updated, new_scopes), updated_code = syntax(path, modified)
         flow = getattr(self.details, "flow", None)
         startup = getattr(self.details, "startup", None) if single else None
         if skeleton != updated or scopes.keys() != new_scopes.keys():
@@ -241,7 +257,7 @@ class Impact:
                         # Require no traced reads of any affected derived field, then verify cold.
                         return self.details.miniatures.check(selected, self.scheduler, "parser", path, modified)
                     return selected
-            if flow and single and flow.equality(path, ast.parse(source), ast.parse(modified)):
+            if flow and single and flow.equality(path, syntax(path, source)[0], new_tree):
                 return rows.get(0, 0) | flow.opaque
             if self.details and single:
                 return self.details.fields(
@@ -338,7 +354,7 @@ class Impact:
                 source, before, _ = self.base(path)
                 modified = patched(source, hunks)
                 return miniature.protect_core(selection, self.scheduler, path, modified,
-                                              before, structure(ast.parse(modified)))
+                                              before, syntax(path, modified)[1])
             return selection
         except (
             UnknownChange,

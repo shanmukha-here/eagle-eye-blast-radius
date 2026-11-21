@@ -4,7 +4,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-from impact import patched, split_diff, structure, UnknownChange
+from impact import patched, split_diff, syntax, UnknownChange
 
 
 def imports(tree):
@@ -71,8 +71,8 @@ class Narrow:
     @lru_cache(maxsize=128)
     def original(self, path):
         source = (self.impact.root / path).read_text()
-        tree = ast.parse(source)
-        return source, imports(tree), structure(tree)
+        tree, scopes, _ = syntax(path, source)
+        return source, imports(tree), scopes
 
     def module(self, path, hunks):
         full = self.impact.full
@@ -80,11 +80,9 @@ class Narrow:
             return full
         source, dependencies, (skeleton, before) = self.original(path)
         modified = patched(source, hunks)
-        compile(modified, path, 'exec', dont_inherit=True)
-        tree = ast.parse(modified)
+        tree, (after_skeleton, after), _ = syntax(path, modified)
         if imports(tree) != dependencies:
             return full
-        after_skeleton, after = structure(tree)
         readers = self.impact.files.get(path, {}).get(0, 0)
         group = self.details.imports.get(path, full)
         if path.startswith('tests/'):

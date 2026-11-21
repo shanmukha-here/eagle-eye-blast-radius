@@ -82,6 +82,7 @@ def literal_edit(left, right):
     return left == right
 
 
+@functools.lru_cache(maxsize=32)
 def changed_fields(old_source, new_source):
     old, new = ast.parse(old_source), ast.parse(new_source)
     changes = []

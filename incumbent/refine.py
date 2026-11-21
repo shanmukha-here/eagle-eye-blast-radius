@@ -8,6 +8,7 @@ import sys
 import tokenize
 
 from observed import enum_edit
+from refine import changed_fields
 from pathlib import Path
 
 
@@ -80,48 +81,6 @@ def literal_edit(left, right):
             literal_edit(a, b) for a, b in zip(left, right)
         )
     return left == right
-
-
-def changed_fields(old_source, new_source):
-    old, new = ast.parse(old_source), ast.parse(new_source)
-    changes = []
-
-    def walk(a, b, scope, in_class=False):
-        if type(a) is not type(b):
-            return False
-        if isinstance(a, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return dump(a) == dump(b)
-        if isinstance(a, ast.ClassDef):
-            scope = (*scope, a.name)
-        if in_class and isinstance(a, (ast.Assign, ast.AnnAssign)):
-            targets = a.targets if isinstance(a, ast.Assign) else [a.target]
-            if (
-                len(targets) == 1
-                and isinstance(targets[0], ast.Name)
-                and a.value is not None
-                and b.value is not None
-                and dump(a.value) != dump(b.value)
-                and literal_edit(a.value, b.value)
-            ):
-                changes.append((".".join(scope), targets[0].id))
-                b.value = a.value
-        if isinstance(a, ast.AST):
-            return all(
-                walk(
-                    getattr(a, k),
-                    getattr(b, k),
-                    scope,
-                    isinstance(a, ast.ClassDef) and k == "body",
-                )
-                for k in a._fields
-            )
-        if isinstance(a, list):
-            return len(a) == len(b) and all(
-                walk(x, y, scope, in_class) for x, y in zip(a, b)
-            )
-        return a == b
-
-    return changes if walk(old, new, ()) else []
 
 
 class Details:
