@@ -8,6 +8,7 @@ import pickle
 import subprocess
 import sys
 import zlib
+from operator import itemgetter
 from pathlib import Path
 from types import CodeType
 
@@ -68,6 +69,7 @@ def suppressed_join_bucket(old, new):
 def fuse_projection_checks():
     """Fuse left-to-right evals of the same verified scalar Python expressions."""
     from sqlglot.executor.context import Context
+    from sqlglot.executor.table import RowReader
 
     before = Context.eval_tuple
     compiled = {}
@@ -82,9 +84,31 @@ def fuse_projection_checks():
                    for c in codes):
                 return None
             text = "(" + ",".join(f"({c.co_filename})" for c in codes) + ",)"
-            return compile(text, "<executor replay expressions>", "eval", dont_inherit=True, optimize=2)
+            combined = compile(text, "<executor replay expressions>", "eval", dont_inherit=True, optimize=2)
+            columns = []
+            for code in codes:
+                node = ast.parse(code.co_filename, mode="eval").body
+                if not (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Subscript)
+                        and isinstance(node.value.value, ast.Name) and node.value.value.id == "scope"
+                        and isinstance(node.slice, ast.Constant) and type(node.slice.value) is str
+                        and isinstance(node.value.slice, ast.Constant) and type(node.value.slice.value) is str):
+                    return combined, []
+                columns.append((node.value.slice.value, node.slice.value))
+            return combined, columns
         except (SyntaxError, ValueError, OverflowError, RecursionError):
             return None
+
+    def bind(scope, columns):
+        readers = []
+        indices = []
+        for name, column in columns:
+            reader = scope.get(name)
+            if type(reader) is not RowReader or column not in reader.columns:
+                return None
+            indices.append(reader.columns[column])
+            if not any(reader is item for item in readers):
+                readers.append(reader)
+        return readers, itemgetter(*indices)
 
     def evaluate(self, codes):
         if type(codes) is not tuple:
@@ -99,9 +123,23 @@ def fuse_projection_checks():
             if len(compiled) == 2048:
                 compiled.clear()
             # Retain the tuple so its identity is never recycled under this key.
-            found = compiled[key] = (codes, make(codes))
-        combined = found[1]
-        return before(self, codes) if combined is None else self.eval(combined)
+            proof = make(codes)
+            found = compiled[key] = [codes, proof, None, None]
+        proof = found[1]
+        if proof is None:
+            return before(self, codes)
+        combined, columns = proof
+        if columns:
+            scope = self.env["scope"]
+            if scope is not found[2]:
+                found[2:] = [scope, bind(scope, columns)]
+            direct = found[3]
+            if direct is not None:
+                readers, select = direct
+                row = readers[0].row
+                if len(readers) == 1 or all(reader.row is row for reader in readers[1:]):
+                    return select(row)
+        return self.eval(combined)
 
     Context.eval_tuple = evaluate
 
