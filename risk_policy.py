@@ -16,6 +16,18 @@ def charge(h):
     return -MISS_MS * math.expm1(-h)
 
 
+def schedule_floor(remaining, duration, largest):
+    """Bound the best schedule before trying to pack the remaining tests."""
+    if not remaining:
+        return 0
+    bound = 2000 + duration
+    for k in range(2, min(8, remaining) + 1):
+        if 2000 * k + largest >= bound:
+            break
+        bound = min(bound, 2000 * k + max(largest, (duration + k - 1) // k))
+    return bound
+
+
 def choose(scheduler, workers, estimates, style="hybrid", narrow=None):
     current = {n for worker in workers for n in worker}
     original = scheduler.cost(workers)
@@ -30,11 +42,21 @@ def choose(scheduler, workers, estimates, style="hybrid", narrow=None):
     duration = scheduler.durations
     ranked = sorted(eligible, key=lambda n: (-duration[n] / max(hazards[n], 1e-9), n))
     best, value, dropped_risk = workers, float(original), 0.0
+    by_weight = sorted(current, key=duration.__getitem__, reverse=True)
+    original_duration = remaining_duration = sum(duration[n] for n in current)
+
+    def floor(omit, cost):
+        remaining = len(current) - len(omit)
+        peak = next((duration[n] for n in by_weight if n not in omit), 0)
+        return schedule_floor(remaining, cost, peak)
 
     def consider(omit, total):
         nonlocal best, value, dropped_risk
         risk = charge(total)
         if risk >= value:
+            return
+        remaining = original_duration - sum(duration[n] for n in omit)
+        if floor(omit, remaining) + risk + 30 >= value:
             return
         plan = scheduler.repack(current - omit, workers)
         expected = scheduler.cost(plan) + risk
@@ -56,7 +78,10 @@ def choose(scheduler, workers, estimates, style="hybrid", narrow=None):
                 continue
             proposed = total + hazards[n]
             extra = charge(proposed) - charge(total)
-            plan = scheduler.repack(current - (removed | {n}), workers)
+            omitted = removed | {n}
+            if current_cost - floor(omitted, remaining_duration - duration[n]) <= extra + 30:
+                continue
+            plan = scheduler.repack(current - omitted, workers)
             cost = scheduler.cost(plan)
             saved = current_cost - cost
             if saved <= extra + 30:
@@ -68,6 +93,7 @@ def choose(scheduler, workers, estimates, style="hybrid", narrow=None):
             break
         _, n, best, current_cost, total = winner
         removed.add(n)
+        remaining_duration -= duration[n]
         value = current_cost + charge(total)
         dropped_risk = charge(total) / MISS_MS
         if len(removed) == len(current):
