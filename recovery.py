@@ -30,6 +30,11 @@ def inert_definition(tree, method):
                              for value in args.defaults + args.kw_defaults)
 
 
+def reads_name(scope, name):
+    return any(isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
+               for node in ast.walk(scope))
+
+
 def declaration_atoms(tree, owner="", enum=False):
     """Describe executed declaration syntax without comparing function bodies."""
     result = {}
@@ -70,7 +75,7 @@ class Recovery:
         source = self.impact.base(path)[0]
         return declaration_atoms(syntax(path, source)[0])
 
-    def observer_mask(self, path, after):
+    def observer_mask(self, path, after, modified):
         previous = self.clean_atoms(path)
         current = declaration_atoms(after)
         edits = [key for key in previous.keys() | current.keys() if previous.get(key) != current.get(key)]
@@ -87,13 +92,13 @@ class Recovery:
                     return inert, True
             if edit not in current:
                 readers = self.removed_method(path, after, owner, member)
-                if readers is not None:
+                if readers is not None and self.impact.details.import_valid(path, modified):
                     return readers, True
         if len(edits) == 1:
             owner, member, kind = edit = edits[0]
             if kind == "assignment" and edit in previous and edit in current:
-                readers = self.literal_attribute(path, after, owner, member)
-                if readers is not None:
+                readers = self.literal_attribute(path, after, modified, owner, member)
+                if readers is not None and self.impact.details.import_valid(path, modified):
                     return readers, True
         details = self.impact.details
         module = path.removesuffix(".py").replace("/", ".")
@@ -140,14 +145,14 @@ class Recovery:
         if member_change(before, after) != (owner, name):
             return None
         cls = dict(classes(before.body)).get(owner)
-        if cls is None:
+        if cls is None or reads_name(cls, name):
             return None
         method = next((node for node in cls.body if getattr(node, "name", None) == name), None)
         if method is None or not inert_definition(before, method):
             return None
         return self.imports.mask(f"call:{path}:{owner}.{name}") | self.member_readers(path, tag, owner, name)
 
-    def literal_attribute(self, path, after, owner, name):
+    def literal_attribute(self, path, after, modified, owner, name):
         """Select readers of a same-type constant in a plain class."""
         if not owner or name.startswith("_") or not self.imports.mask("!attr_references"):
             return None
@@ -158,17 +163,14 @@ class Recovery:
         before_source = self.impact.base(path)[0]
         # changed_fields checks the complete tree, including method bodies.
         before_tree = syntax(path, before_source)[0]
-        if changed_fields(before_source, ast.unparse(after)) != [(owner, name)]:
+        if changed_fields(before_source, modified) != [(owner, name)]:
             return None
 
         def literal(tree):
             cls = dict(classes(tree.body)).get(owner)
-            if cls is None:
-                return None
             # An unqualified class-body read can copy the value into another
             # attribute without executing a named member lookup.
-            if any(isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
-                   for node in ast.walk(cls)):
+            if cls is None or reads_name(cls, name):
                 return None
             for item in cls.body:
                 targets = item.targets if isinstance(item, ast.Assign) else (
@@ -229,7 +231,7 @@ class Recovery:
                 modified = patched(source, hunks)
                 after, (updated, new_scopes), _ = syntax(path, modified)
                 if updated != outer or scopes.keys() != new_scopes.keys():
-                    declarations.append(self.observer_mask(path, after))
+                    declarations.append(self.observer_mask(path, after, modified))
                 else:
                     mask = 0
                     calls = self.impact.files.get(path, {})
