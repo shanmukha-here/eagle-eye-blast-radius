@@ -1,4 +1,5 @@
 """Check just the clean TPC-DS queries that can execute an edited body."""
+import ast
 import contextlib
 import multiprocessing
 import os
@@ -14,6 +15,53 @@ from refine import bindings, regions
 
 
 QUERY_MODULES = ("sqlglot/optimizer/", "sqlglot/executor/", "sqlglot/planner.py", "sqlglot/schema.py")
+FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def independent_functions(before, after):
+    """Keep eager bindings unchanged and restrict edits to plain callables."""
+    def split(tree):
+        functions = {}
+        eager = []
+        for node in tree.body:
+            if isinstance(node, FUNCTIONS):
+                if node.name in functions:
+                    return {}, tree.body
+                functions[node.name] = (node, len(eager))
+            else:
+                eager.append(node)
+        return functions, eager
+
+    old, old_eager = split(before)
+    new, new_eager = split(after)
+    if list(map(ast.dump, old_eager)) != list(map(ast.dump, new_eager)):
+        return False
+    if any(old[name][1] != new[name][1] for name in old.keys() & new.keys()):
+        return False
+    deferred = any(isinstance(node, ast.ImportFrom) and node.module == "__future__"
+                   and any(alias.name == "annotations" for alias in node.names) for node in old_eager)
+    names = {name for name in old.keys() | new.keys() if name not in old or name not in new
+             or ast.dump(old[name][0]) != ast.dump(new[name][0])}
+    if not names or any(name.startswith("__") for name in names) or any(
+                        isinstance(node, ast.Name) and node.id in names
+                        for eager in old_eager for node in ast.walk(eager)):
+        return False
+    for name in names:
+        for definitions in (old, new):
+            if name not in definitions:
+                continue
+            bound, _ = definitions[name]
+            args = bound.args
+            parameters = args.posonlyargs + args.args + args.kwonlyargs
+            parameters += [value for value in (args.vararg, args.kwarg) if value is not None]
+            if (bound.decorator_list or bound.type_params or
+                    any(default is not None and not isinstance(default, ast.Constant)
+                        for default in args.defaults + args.kw_defaults)):
+                return False
+            for annotation in (bound.returns, *(argument.annotation for argument in parameters)):
+                if annotation is not None and not deferred:
+                    return False
+    return True
 
 
 def estimated_cpu(checks):
@@ -136,6 +184,29 @@ class QueryGate:
         checks.sort(key=lambda check: check[-1])
         return checks, not (optimize or unresolved) and path.startswith("sqlglot/executor/")
 
+    def definition_checks(self, section, reference):
+        """Compare optimizer results for edits the body-only rule cannot cover."""
+        edits = split_diff(section)
+        path, = edits
+        if (reference is None or not path.startswith("sqlglot/optimizer/") or
+                self.index.get("boundary:" + path) or reference.mask("render:" + path)):
+            return None
+        module = self.index.get("module:" + path)
+        if not module:
+            return None
+        source = self.impact.base(path)[0]
+        before, after = syntax(path, source)[0], syntax(path, patched(source, edits[path]))[0]
+        if not independent_functions(before, after):
+            return None
+        _, execute = module[0][0]
+        checks = []
+        for i in range(57):
+            item = self.index.get(f"case:{i}")
+            if not item:
+                return None
+            checks.append((*item[0][0], bool(execute & (1 << i))))
+        return checks, False
+
     def apply(self, text, workers, workspace, cpu_limit, observed=None, projected=None):
         chosen = {n for group in workers for n in group}
         if self.index is None or self.test not in chosen or "sqlglot" in sys.modules:
@@ -164,7 +235,7 @@ class QueryGate:
             pass
         return workers
 
-    def recovery(self, text, workers, long_cases, workspace, deadline):
+    def recovery(self, text, workers, long_cases, workspace, deadline, reference=None):
         """Check late TPC-DS candidates against the complete patched tree."""
         if (self.index is None or self.recovery_cpu < 0.65 or
                 not any(self.test in group for group in workers)):
@@ -183,6 +254,10 @@ class QueryGate:
                 return workers
             _, section = source
             proof = self.checks(section)
+            if proof is None:
+                proof = self.definition_checks(section, reference)
+                if proof is not None:
+                    self.stats["recovery_definition_queries"] = len(proof[0])
             if proof is None or not proof[0]:
                 return workers
             new = self.apply(section, workers, workspace, available, projected=proof)
