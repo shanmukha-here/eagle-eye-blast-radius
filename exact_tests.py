@@ -133,7 +133,7 @@ class ExactTests:
         self.ctx = multiprocessing.get_context("fork")
         self.remaining = min(20.0, count * 0.4)
         self.collection_remaining = min(14.0, count * 0.35)
-        self.cleanup_remaining = min(5.0, count * 0.10)
+        self.cleanup_remaining = min(6.0, count * 0.12)
         self.attempted = set()
         self.passed = set()
         self.deadline = time.monotonic() + min(130.0, count * 2.3 + 3.0)
@@ -183,19 +183,25 @@ class ExactTests:
 
     def certify_small(self, patch, plan, certificate):
         """Use a separate allowance for plans that could lose their only worker."""
-        if len(plan) != 1 or len(plan[0]) > 16 or self.cleanup_remaining < 0.30:
+        if len(plan) != 1 or len(plan[0]) > 64 or self.cleanup_remaining < 0.30:
             return plan
         selected = plan[0]
-        if (sum(self.scheduler.durations[n] for n in selected) > 500
-                or self.fixture_cpu(selected) > 0.45):
+        recorded = sum(self.scheduler.durations[n] for n in selected)
+        if recorded > 1100:
             return plan
         names = tuple(sorted(self.nodes[n] for n in selected))
-        if names in self.attempted or not certificate(patch):
+        if names in self.attempted:
             return plan
+        direct = all(name in self.ready for name in names)
+        if not direct and (len(names) > 16 or recorded > 500):
+            return plan
+        estimate = max(self.fixture_cpu(selected), recorded / 1000.0)
+        if estimate > (0.74 if direct else 0.45) or not certificate(patch):
+            return plan
+        cap = min(self.cleanup_remaining, (0.94 if direct else 0.61), 0.49 * (2.0 + recorded / 1000.0))
         start = seconds()
         try:
-            return self.refine(patch, plan, short_only=True,
-                               allowance=min(0.55, self.cleanup_remaining))
+            return self.refine(patch, plan, short_only=True, allowance=cap)
         finally:
             self.cleanup_remaining -= seconds() - start
 
