@@ -1,8 +1,48 @@
-"""Clear a stress selection only when its full clean trace bypasses an edited return."""
+"""Use clean stress observations to limit the parser test selection."""
 import ast
 from copy import deepcopy
 
 from impact import patched, split_diff, syntax, UnknownChange
+from module_topology import hard_topology, opaque_format
+from narrow import imports
+from risk_features import edit_lines
+
+
+def observes_patch(impact, index, parser_bit, text):
+    """Retain the stress test for changes to its runtime or startup inputs."""
+    if (not index or not parser_bit or not index.mask("module_coverage")
+            or not index.mask("count:0") or hard_topology(text) or opaque_format(text)):
+        return True
+    try:
+        for path, hunks in split_diff(text).items():
+            fixture_readers = impact.files.get(path, {}).get(0)
+            if path.startswith("tests/fixtures/") and path.endswith(".sql") and fixture_readers is not None:
+                if fixture_readers & parser_bit:
+                    return True
+                continue
+            if (not path.startswith("sqlglot/") or not path.endswith(".py")
+                    or path.endswith("/__init__.py")):
+                return True
+
+            cases = index.mask("0:" + path)
+            if cases & ~1 or (fixture_readers or 0) & parser_bit:
+                return True
+
+            source, (outer, scopes), _ = impact.base(path)
+            modified = patched(source, hunks)
+            before = syntax(path, source)[0]
+            after, (revised, new_scopes), _ = syntax(path, modified)
+            if imports(before) != imports(after):
+                return True
+            declaration = outer != revised or scopes.keys() != new_scopes.keys()
+            if declaration:
+                if cases or not impact.details.import_valid(path, modified):
+                    return True
+            if cases and any(index.mask(f"0:{path}:{line}") for line in edit_lines(hunks)[0]):
+                return True
+        return False
+    except (UnknownChange, OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
+        return True
 
 
 def unexecuted_return(impact, text, parser_bit):
