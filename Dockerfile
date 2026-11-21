@@ -31,7 +31,7 @@ RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python reference_replay.py build
 COPY incumbent/ ./incumbent/
 RUN ln -s ../replay_index.z incumbent/replay_index.z \
     && ln -s ../optimizer_inputs incumbent/optimizer_inputs
-ARG PROBE_EMPTY_CLASS="b"
+ARG PROBE_EMPTY_CLASS="d"
 ENV PROBE_EMPTY_CLASS=${PROBE_EMPTY_CLASS}
 COPY probe.py ./
 CMD ["python", "/app/probe.py"]
