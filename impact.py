@@ -7,6 +7,7 @@ from pathlib import Path
 
 from dependencies import appended_failure, simple_collection
 from refine import bindings
+from miniatures import CORE
 
 HEADER = re.compile(r"diff --git a/([A-Za-z0-9_./-]+) b/([A-Za-z0-9_./-]+)")
 HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*")
@@ -302,6 +303,15 @@ class Impact:
                 selection |= self.file_mask(path, hunks, single=len(edits) == 1, fixture_mix=fixture_mix)
                 if selection == self.full:
                     break
+            miniature = getattr(self.details, "miniatures", None)
+            if miniature and selection != self.full and edits.keys() & CORE:
+                if len(edits) != 1:
+                    return selection | miniature.tests.get("parser", 0)
+                path, hunks = next(iter(edits.items()))
+                source, before, _ = self.base(path)
+                modified = patched(source, hunks)
+                return miniature.protect_core(selection, self.scheduler, path, modified,
+                                              before, structure(ast.parse(modified)))
             return selection
         except (
             UnknownChange,

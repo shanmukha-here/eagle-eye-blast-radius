@@ -10,6 +10,9 @@ from optimizer_probe import cost, local_edit
 from stress_guard import eligible, same_full_predicates
 
 
+CORE = frozenset({"sqlglot/parser.py", "sqlglot/tokens.py", "sqlglot/tokenizer_core.py"})
+
+
 class Miniatures:
     def __init__(self, ids, root, directory):
         self.directory = Path(directory).resolve()
@@ -49,9 +52,6 @@ class Miniatures:
     def select(self, mask, scheduler, path, source, key, old, new, readers):
         if not scheduler or path.endswith("/__init__.py"):
             return mask
-        if mask & self.tests.get("parser", 0) and not readers & self.tests.get("parser", 0):
-            if eligible(path, old[3], new[3]) and same_full_predicates(old[3], new[3], self.stress):
-                mask = self.check(mask, scheduler, "parser", path, source)
         # The H queries touch the parser only after setup. Restrict the code
         # edit to token operands; fixture loading and worker setup stay identical.
         h = self.tests.get("execute", 0) | self.tests.get("optimized", 0)
@@ -65,3 +65,19 @@ class Miniatures:
             if cases and len(cases) <= 4:
                 mask = self.check(mask, scheduler, "memory", path, source, cases)
         return mask
+
+
+    def protect_core(self, mask, scheduler, path, source, before, after):
+        """A semantic edit to the core grammar needs a positive full-width witness."""
+        original, scopes = before
+        revised, new_scopes = after
+        if original == revised and scopes.keys() == new_scopes.keys():
+            keys = [k for k in scopes if scopes[k][2] != new_scopes[k][2]]
+            if not keys:
+                return mask
+            if len(keys) == 1:
+                key = keys[0]
+                a, b = scopes[key][3], new_scopes[key][3]
+                if eligible(path, a, b) and same_full_predicates(a, b, self.stress):
+                    return self.check(mask | self.tests.get("parser", 0), scheduler, "parser", path, source)
+        return mask | self.tests.get("parser", 0)
