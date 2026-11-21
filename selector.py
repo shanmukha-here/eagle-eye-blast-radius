@@ -324,6 +324,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 if insured is not plan:
                     precision.stats["insurance_tests"] = sum(map(len, insured)) - sum(map(len, plan))
                     plan = insured
+        # Diagnostic send-out against the frozen control.
+        removed = {queries.test}
+        selected = {n for group in plan for n in group}
+        if selected & removed:
+            plan = scheduler.repack(selected - removed, plan)
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
