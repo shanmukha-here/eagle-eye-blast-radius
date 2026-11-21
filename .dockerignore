@@ -37,3 +37,4 @@ tools/*
 !incumbent/
 !incumbent/*.py
 !incumbent/observers.z
+!long_gate.py

@@ -20,6 +20,7 @@ from optimizer_probe import Replay
 from miniatures import CORE, Miniatures
 from startup import Startup
 from narrow import Narrow
+from long_gate import LongGate
 from impact import Impact, UnknownChange, patched, split_diff, structure
 from refine import Details
 
@@ -141,10 +142,12 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     patches = sorted((data / "commits").glob("*.patch"))
     narrow = Narrow(impact, map_path.parent)
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
+    gate = LongGate(scheduler, profile["ids"], base, len(patches))
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
     for path in patches:
         before = mask = impact.full
         keep = 0
+        text = None
         if time.monotonic() < deadline and path.stat().st_size <= 1_000_000:
             try:
                 text = path.read_text("utf-8")
@@ -157,7 +160,10 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     keep = parser
             except UnicodeError:
                 pass
-        workers = json.dumps(scheduler.intersect(before, mask, keep), separators=(",", ":"))
+        plan = scheduler.intersect(before, mask, keep)
+        if text is not None:
+            plan = gate.apply(text, plan)
+        workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
 
 
