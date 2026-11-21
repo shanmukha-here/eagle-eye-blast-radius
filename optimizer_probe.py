@@ -9,6 +9,7 @@ import subprocess
 import sys
 import zlib
 from pathlib import Path
+from types import CodeType
 
 from checkpoint import digest, table_digest
 from import_check import PatchedModule
@@ -63,6 +64,47 @@ def suppressed_join_bucket(old, new):
     return rows[0] if len(rows) == 1 else None
 
 
+
+def fuse_projection_checks():
+    """Fuse left-to-right evals of the same verified scalar Python expressions."""
+    from sqlglot.executor.context import Context
+
+    before = Context.eval_tuple
+    compiled = {}
+    frame_reads = {"eval", "exec", "globals", "locals", "vars", "super"}
+
+    def make(codes):
+        if any(type(code) is not CodeType or frame_reads.intersection(code.co_names)
+               or any(isinstance(value, CodeType) for value in code.co_consts) for code in codes):
+            return None
+        try:
+            if any(compile(c.co_filename, c.co_filename, "eval", dont_inherit=True, optimize=2) != c
+                   for c in codes):
+                return None
+            text = "(" + ",".join(f"({c.co_filename})" for c in codes) + ",)"
+            return compile(text, "<executor replay expressions>", "eval", dont_inherit=True, optimize=2)
+        except (SyntaxError, ValueError, OverflowError, RecursionError):
+            return None
+
+    def evaluate(self, codes):
+        if type(codes) is not tuple:
+            return before(self, codes)
+        if not codes:
+            return ()
+        if len(codes) == 1:
+            return (self.eval(codes[0]),)
+        key = id(codes)
+        found = compiled.get(key)
+        if found is None:
+            if len(compiled) == 2048:
+                compiled.clear()
+            # Retain the tuple so its identity is never recycled under this key.
+            found = compiled[key] = (codes, make(codes))
+        combined = found[1]
+        return before(self, codes) if combined is None else self.eval(combined)
+
+    Context.eval_tuple = evaluate
+
 def cost(scheduler, mask):
     workers = json.loads(scheduler.schedule(mask))
     peak = max((sum(scheduler.durations[i] for i in group) for group in workers), default=0)
@@ -108,8 +150,10 @@ class Replay:
         opt, whole = cases
         execution_only = (path == "sqlglot/executor/python.py" and key[0] == "PythonExecutor"
                           and not opt)
+        fuse = False
         if execution_only and qualified == "PythonExecutor.hash_join":
             pair_line = suppressed_join_bucket(old[3], new[3])
+            fuse = pair_line is not None
             witness = self.line_ids.get(f"{location}@{pair_line}")
             if witness is not None:
                 outside, query = self.line_pool[witness]
@@ -120,7 +164,7 @@ class Replay:
         # Check cheap optimizer postconditions first. A changed result requires
         # executing the original query and comparing its complete table.
         queries = [[*self.cases[i], False] for i in opt] + [[*self.cases[i], True] for i in whole]
-        payload = json.dumps([path, source, queries, execution_only]).encode()
+        payload = json.dumps([path, source, queries, execution_only, fuse]).encode()
         timeout = min(10 if execution_only else 5, benefit / 2)
         if self.reserved_seconds + timeout > 60:
             return mask
@@ -140,7 +184,9 @@ class Replay:
 
 
 def verify(root):
-    path, modified, checks, execution_only = json.load(sys.stdin)
+    payload = json.load(sys.stdin)
+    path, modified, checks, execution_only = payload[:4]
+    fuse = len(payload) == 5 and payload[4]
     module = path[:-3].replace("/", ".")
     sys.meta_path.insert(0, PatchedModule(module, str(root / path), modified))
     sys.path.insert(0, str(root))
@@ -153,6 +199,8 @@ def verify(root):
     from sqlglot.executor import execute
     from tests.helpers import TPCDS_SCHEMA
 
+    if fuse:
+        fuse_projection_checks()
     tables = {}
     for key, reference, opt_reference, whole in checks:
         if execution_only:
