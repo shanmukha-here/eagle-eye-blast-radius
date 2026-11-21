@@ -150,7 +150,9 @@ def verify(root, path, suite):
 class ReferenceReplay:
     def __init__(self, base, directory, scheduler, tests, count):
         self.base = base.resolve()
-        self.roles = json.loads((directory / "reference_reads.json").read_bytes())
+        self.roles = {suite: set(fields) for suite, fields in
+                      json.loads((directory / "reference_reads.json").read_bytes()).items()}
+        self.paths = {field.split(":", 2)[1] for fields in self.roles.values() for field in fields}
         self.scheduler = scheduler
         self.tests = {r["number"]: TARGETS[r["id"].rsplit("::", 1)[-1]] for r in tests
                       if r["id"].rsplit("::", 1)[-1] in TARGETS}
@@ -172,7 +174,7 @@ class ReferenceReplay:
             if len(edits) != 1:
                 return plan
             path, hunks = next(iter(edits.items()))
-            if not path.startswith("sqlglot/dialects/") or not path.endswith(".py"):
+            if path not in self.paths:
                 return plan
             original = self.original(path)
             modified = patched(original, hunks)
@@ -183,7 +185,7 @@ class ReferenceReplay:
             keys = {f"field:{path}:{owner}:{field}" for owner, field in fields}
             for number in sorted(long, key=self.scheduler.durations.get, reverse=True):
                 suite = self.tests[number]
-                if not keys <= set(self.roles[suite]):
+                if not keys <= self.roles[suite]:
                     continue
                 reduced = self.scheduler.repack(selected - {number}, plan)
                 gain = (self.scheduler.cost(plan) - self.scheduler.cost(reduced)) / 1000

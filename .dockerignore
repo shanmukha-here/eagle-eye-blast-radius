@@ -43,5 +43,7 @@ tools/*
 !values.z
 !reference_replay.py
 !reference_reads.json
+!exact_tests.py
+!ready_imports.json
 !memo_witness.py
 !parser_signal.py

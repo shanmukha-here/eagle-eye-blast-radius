@@ -14,11 +14,11 @@ COMPARISONS = {
 SCALARS = (type(None), bool, int, str)
 
 
-def inputs(expr):
+def inputs(expr, require_read=True):
     if expr is None:
         return None
     nodes = list(ast.walk(expr))
-    if len(nodes) > 19 or not any(isinstance(n, ast.Name) for n in nodes):
+    if len(nodes) > 19 or (require_read and not any(isinstance(n, ast.Name) for n in nodes)):
         return None
     if any(
         type(n) not in (ast.Name, ast.Load, ast.Constant, ast.UnaryOp, ast.Not,
@@ -78,7 +78,7 @@ def replacements(old, new):
                 before, after = getattr(a, field), getattr(b, field)
                 if fingerprint(before) != fingerprint(after):
                     names = inputs(before)
-                    new_names = inputs(after)
+                    new_names = inputs(after, require_read=False)
                     if names is not None and new_names is not None and set(new_names) <= set(names):
                         changes.append((before, after, names, field == "test"))
                         return all(compare(getattr(a, attr), getattr(b, attr), owner)

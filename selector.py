@@ -15,6 +15,7 @@ from dependencies import Dependencies
 from decision import Execution, PatchWorkspace
 from flow import Flow
 from observed import Observers
+from exact_tests import ExactTests
 from optimizer_probe import Replay, local_edit
 from miniatures import CORE, Miniatures
 from memo_witness import bypass_only
@@ -199,6 +200,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     observation = ObservationIndex(impact, map_path.with_name("values.z"))
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
+    verify = ExactTests(scheduler, tests, base, len(patches))
     parser_bit = impact.details.miniatures.tests.get("parser", 0)
     parser_id = next((number for number, bit in scheduler.bits.items() if bit and bit == parser_bit), None)
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
@@ -213,8 +215,14 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 if direct is not None:
                     kind, observed = direct
                     observed_plan = json.loads(scheduler.schedule(observed, pad=False))
-                    if kind == "default" or scheduler.cost(observed_plan) <= 3000:
-                        workers = json.dumps(observed_plan, separators=(",", ":"))
+                    if kind == "syntax":
+                        observed_plan = verify.collection(text, observed_plan)
+                    if observed_plan is not None and (
+                        kind in ("default", "attribute", "import", "syntax") or scheduler.cost(observed_plan) <= 3000
+                    ):
+                        plan = references.apply(text, observed_plan)
+                        plan = verify.refine(text, plan)
+                        workers = json.dumps(plan, separators=(",", ":"))
                         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
                         continue
                 with PatchWorkspace(base.resolve(), text) as workspace:
@@ -241,6 +249,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         if unexecuted_return(impact, text, parser_bit):
                             retained = {n for group in plan for n in group if n != parser_id}
                             plan = scheduler.repack(retained, plan)
+                    plan = verify.refine(text, plan)
         except UnicodeError:
             plan = scheduler.intersect(impact.full, impact.full)
         workers = json.dumps(plan, separators=(",", ":"))

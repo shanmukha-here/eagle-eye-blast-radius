@@ -6,6 +6,7 @@ import zlib
 from functools import lru_cache
 
 from impact import patched, split_diff, UnknownChange
+from refine import changed_fields
 from value_observations import SCALARS, input_mask, key, replacements
 
 
@@ -17,6 +18,7 @@ def positional_defaults(args):
 def default_changes(old, new):
     """Require unchanged signatures, decorators, bodies and module statements."""
     changes = []
+    restore = []
     if len(old.body) != len(new.body):
         return []
     for a, b in zip(old.body, new.body):
@@ -26,13 +28,58 @@ def default_changes(old, new):
         old_defaults = list(positional_defaults(a.args)) + list(zip(a.args.kwonlyargs, a.args.kw_defaults))
         new_defaults = list(positional_defaults(b.args)) + list(zip(b.args.kwonlyargs, b.args.kw_defaults))
         if len(old_defaults) != len(new_defaults):
-            return []
+            break
         for (name, ref), (_, modified) in zip(old_defaults, new_defaults):
             if isinstance(ref, ast.Constant) and isinstance(modified, ast.Constant):
                 if type(ref.value) is type(modified.value) and type(ref.value) in SCALARS and ref.value != modified.value:
                     changes.append((a.lineno, a.name, name.arg))
-                    modified.value = ref.value
-    return changes if ast.dump(old) == ast.dump(new) else []
+                    restore.append((modified, ref.value, modified.value))
+    try:
+        for node, value, _ in restore:
+            node.value = value
+        return changes if ast.dump(old) == ast.dump(new) else []
+    finally:
+        for node, _, value in restore:
+            node.value = value
+
+
+def import_activation(old, new, path, ready):
+    """An annotation-only import may read an existing binding without running module code."""
+    if len(old.body) != len(new.body):
+        return False
+    aliases = {name.asname or name.name for statement in old.body if isinstance(statement, ast.Import)
+               for name in statement.names if name.name == "typing"}
+    if not any(isinstance(s, ast.ImportFrom) and s.module == "__future__"
+               and any(a.name == "annotations" for a in s.names) for s in old.body):
+        return False
+    changed = [(a, b) for a, b in zip(old.body, new.body) if ast.dump(a) != ast.dump(b)]
+    if len(changed) != 1:
+        return False
+    before, after = changed[0]
+    if not (isinstance(before, ast.If) and isinstance(after, ast.If) and not before.orelse
+            and not after.orelse and isinstance(before.test, ast.Attribute)
+            and isinstance(before.test.value, ast.Name) and before.test.value.id in aliases
+            and before.test.attr == "TYPE_CHECKING" and isinstance(after.test, ast.Constant)
+            and after.test.value is True and f"{path}:{before.lineno}" in ready
+            and [ast.dump(n) for n in before.body] == [ast.dump(n) for n in after.body]):
+        return False
+    if any(not isinstance(stmt, ast.ImportFrom) or stmt.level or not stmt.module
+           or any(a.name == "*" for a in stmt.names) for stmt in before.body):
+        return False
+    bound = {a.asname or a.name for stmt in before.body for a in stmt.names}
+    # Only annotations may refer to the new binding. The future import stores
+    # them as strings, so they perform no reads at definition time.
+    def runtime_names(node):
+        if isinstance(node, ast.Name):
+            yield node.id
+        for field, value in ast.iter_fields(node):
+            if field in ("annotation", "returns"):
+                continue
+            children = value if isinstance(value, list) else [value]
+            for child in children:
+                if isinstance(child, ast.AST):
+                    yield from runtime_names(child)
+    return not bound.intersection(runtime_names(old))
 
 
 class ObservationIndex:
@@ -43,6 +90,11 @@ class ObservationIndex:
         data = json.loads(zlib.decompress(filename.read_bytes()))
         self.defaults = {key: int(bits, 16) for key, bits in data["defaults"].items()}
         self.values = data["values"]
+        self.ready = set(json.loads(filename.with_name("ready_imports.json").read_bytes()))
+        self.references = {}
+        for key, bits in self.details.references.items():
+            path, _, _ = key.partition(":")
+            self.references[path] = self.references.get(path, 0) | bits
 
     @lru_cache(maxsize=96)
     def original(self, path):
@@ -66,9 +118,18 @@ class ObservationIndex:
                 return None
             source, old = self.original(path)
             modified = patched(source, hunks)
-            after = ast.parse(modified, path)
             external = (self.impact.files.get(path, {}).get(0, 0) |
                         self.details.flow.opaque | self.details.positions)
+            try:
+                after = ast.parse(modified, path)
+            except SyntaxError:
+                imports = self.details.imports.get(path, 0)
+                dialects = self.details.dialects.get(path, 0)
+                if not (imports or dialects):
+                    return None
+                affected = (external | imports | dialects | self.references.get(path, 0) |
+                            self.impact.visitors.get(path, 0))
+                return "syntax", affected
             scalar = replacements(old, after)
             if scalar:
                 affected = external
@@ -95,6 +156,23 @@ class ObservationIndex:
                 # No new binding, definition execution or registry mutation.
                 # Each changed value is an existing scalar literal.
                 return "default", affected
+            fields = changed_fields(source, modified)
+            if fields and self.details.access:
+                affected = external
+                for owner, field in fields:
+                    readers = self.details.access.scalar_users(path, owner, field, source)
+                    if readers is None and self.details.observers:
+                        readers = self.details.observers.users(path, owner, field, source, modified)
+                    if readers is None:
+                        return None
+                    affected |= readers
+                if affected != self.impact.full and self.details.import_valid(path, modified):
+                    return "attribute", affected
+            if import_activation(old, after, path, self.ready) and self.details.import_valid(path, modified):
+                affected = (external | self.details.imports.get(path, 0) |
+                            self.impact.visitors.get(path, 0) | self.references.get(path, 0))
+                if affected != self.impact.full:
+                    return "import", affected
         except (UnknownChange, OSError, ValueError, SyntaxError, RecursionError):
             return None
         return None

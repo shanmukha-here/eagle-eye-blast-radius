@@ -22,7 +22,8 @@ ENV SKIP_INTEGRATION=0 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHON_CPU_COUNT
 COPY query_sentinel.py memo_witness.py ./
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python query_sentinel.py
 COPY decision.py selector.py narrow.py fixture_reads.json long_gate.py parser_signal.py ./
-COPY observation_index.py value_observations.py values.z ./
+COPY observation_index.py value_observations.py values.z ready_imports.json ./
+COPY exact_tests.py ./
 COPY reference_replay.py reference_reads.json ./
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python reference_replay.py build
 COPY incumbent/ ./incumbent/

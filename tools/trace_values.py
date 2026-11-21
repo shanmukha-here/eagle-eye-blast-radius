@@ -69,17 +69,17 @@ class Trace(ast.NodeTransformer):
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def generic_visit(self, node):
-        super().generic_visit(node)
         field = EXPRESSION_FIELDS.get(type(node))
         if not field or not isinstance(self.owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return node
+            return super().generic_visit(node)
         expr = getattr(node, field)
         names = inputs(expr)
+        super().generic_visit(node)
         if names is not None:
             func = ast.Name(id="_observe_clean_scalar_inputs", ctx=ast.Load())
             args = [ast.Constant(key(self.filename, expr)), ast.Constant(names)]
             call = ast.Call(func=func, args=args, keywords=[])
-            new = ast.BoolOp(op=ast.Or(), values=[ast.copy_location(call, expr), expr])
+            new = ast.BoolOp(op=ast.Or(), values=[ast.copy_location(call, expr), getattr(node, field)])
             setattr(node, field, ast.copy_location(new, expr))
         return node
 

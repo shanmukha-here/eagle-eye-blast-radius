@@ -14,7 +14,7 @@ from impact import split_diff, patched, syntax, UnknownChange
 from optimizer_probe import cost
 
 
-def overlay(base, root, edits):
+def overlay(base, root, edits, validate=True):
     """Only copy modified files; symlink untouched subtrees from the clean pin."""
     expanded = set()
     for name, hunks in edits.items():
@@ -41,7 +41,7 @@ def overlay(base, root, edits):
         dest = root / name
         dest.unlink()
         content = patched(src.read_text(), hunks)
-        if name.endswith(".py"):
+        if validate and name.endswith(".py"):
             syntax(name, content)
         dest.write_text(content)
 
