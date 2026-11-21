@@ -12,6 +12,12 @@ from optimizer_probe import local_edit, verify_queries
 from refine import bindings, regions
 
 
+def estimated_cpu(checks):
+    """Allow for a cold import and a complete result check on affected stages."""
+    complete = sum(whole or not checkpoint for _, _, checkpoint, whole in checks)
+    return 0.60 + 0.035 * (len(checks) - complete) + 0.254 * complete
+
+
 def query_worker(connection, root, store, checks, executor_only, cap):
     try:
         os.setsid()
@@ -103,10 +109,13 @@ class QueryGate:
             if attempt is None:
                 return workers
             checks, executor_only = attempt
-            self.stats["tpcds_queries"] = len(checks)
             if not checks:
                 self.stats["tpcds_cleared"] = True
                 return reduced
+            if estimated_cpu(checks) > cap:
+                self.stats["tpcds_over_budget"] = len(checks)
+                return workers
+            self.stats["tpcds_queries"] = len(checks)
             root = workspace.root()
             started = time.monotonic()
             with contextlib.ExitStack() as stack:
