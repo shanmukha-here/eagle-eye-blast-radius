@@ -120,14 +120,15 @@ class RiskPolicy:
         form, rows = features
         if not self.model.supported & (1 << form):
             return workers
+        scale, style = self.model.settings(form)
         memo = {}
         p = {}
         for n, row in zip(selected, rows):
             if row not in memo:
-                memo[row] = self.model.probability(row)
+                memo[row] = self.model.probability(row, scale)
             p[n] = memo[row]
         narrow = {n for n, row in zip(selected, rows) if any(row[-5:])} if len(selected) >= 512 else None
-        plan, risk = choose(self.scheduler, workers, p, self.model.style, narrow)
+        plan, risk = choose(self.scheduler, workers, p, style, narrow)
         if plan is not workers:
             self.stats = dict(risk_form=form, risk_dropped=len(selected) - sum(map(len, plan)),
                               risk_saved_ms=self.scheduler.cost(workers) - self.scheduler.cost(plan),

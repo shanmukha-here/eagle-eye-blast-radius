@@ -4,10 +4,12 @@ from mmap import ACCESS_READ, mmap
 from struct import Struct
 
 MAGIC = b"BLASTRK1"
+FORM_MAGIC = b"BLASTRK2"
 HEADER = Struct("<8sHHHHdd")
 NODE = Struct("<hHHd")
 ROOT = Struct("<I")
 DOUBLE = Struct("<d")
+FORM_POLICY = Struct("<d?")
 GREEDY_ONLY = 1 << 15
 
 
@@ -16,7 +18,7 @@ class RiskModel:
         with path.open("rb") as source:
             self.mapping = mmap(source.fileno(), 0, access=ACCESS_READ)
         magic, width, trees, bins, self.supported, self.base, self.scale = HEADER.unpack_from(self.mapping)
-        if magic != MAGIC or width != features or not trees or not bins:
+        if magic not in (MAGIC, FORM_MAGIC) or width != features or not trees or not bins:
             raise ValueError("Invalid risk model")
         self.style = "greedy" if self.supported & GREEDY_ONLY else "hybrid"
         self.supported &= ~GREEDY_ONLY
@@ -26,6 +28,19 @@ class RiskModel:
         offset += bins * DOUBLE.size
         self.upper = [DOUBLE.unpack_from(self.mapping, offset + i * DOUBLE.size)[0] for i in range(bins)]
         self.nodes = offset + bins * DOUBLE.size
+        self.form_policies = ()
+        if magic == FORM_MAGIC:
+            count = self.mapping[self.nodes]
+            start = self.nodes + 1
+            self.form_policies = tuple(FORM_POLICY.unpack_from(self.mapping, start + i * FORM_POLICY.size)
+                                       for i in range(count))
+            self.nodes = start + count * FORM_POLICY.size
+
+    def settings(self, form):
+        if form < len(self.form_policies):
+            scale, greedy = self.form_policies[form]
+            return scale, "greedy" if greedy else "hybrid"
+        return self.scale, self.style
 
     def raw(self, features):
         score = self.base
@@ -39,5 +54,8 @@ class RiskModel:
                 slot = root + (left if features[feature] <= point else right)
         return score
 
-    def probability(self, features):
-        return min(0.99, self.scale * self.upper[min(len(self.cut) - 1, bisect_left(self.cut, self.raw(features)))])
+    def probability(self, features, scale=None):
+        if scale is None:
+            scale = self.scale
+        bucket = min(len(self.cut) - 1, bisect_left(self.cut, self.raw(features)))
+        return min(0.99, scale * self.upper[bucket])

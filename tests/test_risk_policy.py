@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from risk_features import RiskFeatures, member_change
+from risk_model import DOUBLE, FORM_MAGIC, FORM_POLICY, HEADER, MAGIC, NODE, ROOT, RiskModel
 from risk_policy import MISS_MS, charge, choose, hazard
 from selector import Scheduler
 
@@ -46,3 +47,20 @@ def test_member_risk_form_requires_an_isolated_undecorated_definition():
     assert member_change(ast.parse(source), ast.parse(unchanged + "import os\n")) is None
     decorated = source.replace("    def build", "    @staticmethod\n    def build")
     assert member_change(ast.parse(decorated), ast.parse(unchanged)) is None
+
+
+def test_mmap_models_share_predictions_with_form_specific_pricing(tmp_path):
+    binary = tmp_path / "risk_model.bin"
+    curve = ROOT.pack(0) + DOUBLE.pack(0.0) + DOUBLE.pack(0.04)
+    leaf = NODE.pack(-1, 0, 0, 0.3)
+    binary.write_bytes(HEADER.pack(MAGIC, 1, 1, 1, 1, 0.0, 1.0) + curve + leaf)
+    original = RiskModel(binary, 1)
+    assert original.settings(0) == (1.0, "hybrid")
+    binary = tmp_path / "risk_form_model.bin"
+    policy = bytes([1]) + FORM_POLICY.pack(2.5, True)
+    binary.write_bytes(HEADER.pack(FORM_MAGIC, 1, 1, 1, 1, 0.0, 1.0) + curve + policy + leaf)
+    model = RiskModel(binary, 1)
+    scale, mode = model.settings(0)
+    assert mode == "greedy"
+    assert model.raw((0,)) == original.raw((0,))
+    assert model.probability((0,), scale) == 0.1
