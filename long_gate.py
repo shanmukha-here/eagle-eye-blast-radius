@@ -94,7 +94,10 @@ class LongGate:
         smaller = self.scheduler.repack(run - {n for n, _ in targets}, workers)
         gain = (self.scheduler.cost(workers) - self.scheduler.cost(smaller)) / 1000
         cap = min(5.0, self.available, gain * 0.55)
-        if cap < 0.25:
+        # The full TPC-DS witness must walk every executable query even on
+        # an unchanged tree. Subsecond windows cannot certify that workload.
+        minimum = 1.35 if targets[0][1] == "tpcds" else 0.25
+        if cap < minimum:
             return workers
         started = time.monotonic()
         try:

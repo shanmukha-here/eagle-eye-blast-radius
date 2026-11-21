@@ -41,34 +41,31 @@ def build():
 
 
 def check():
+    from contextlib import ExitStack
     from tests.helpers import TPCDS_SCHEMA
+
     pairs = inputs()
     expected = json.loads(STORE.read_bytes())
-    changed = []
-    for i, ((meta, sql, _), (source, execute, parsed, duck, optimized)) in enumerate(
-            zip(pairs, expected, strict=True)):
-        if fingerprint(sql) != source or bool(meta.get("execute")) != execute:
-            return False
-        tree, p, d = sql_boundary(sql)
-        if execute:
-            generated = optimized_sql(tree)
-            if d != duck or generated != optimized or p != parsed:
-                changed.append((i, tree))
-    if not changed:
-        return True
-    from sqlglot import find_tables
-    from sqlglot.executor import execute
-    from tests.test_executor import TestExecutor
-    # The upstream subTest assertions raise outside unittest's run context.
-    case = TestExecutor("test_execute_tpcds")
-    case.setUpClass()
-    try:
-        for i, tree in changed:
-            subset = {t.name:case.tpcds_tables[t.name] for t in find_tables(tree)}
+    case = None
+    with ExitStack() as cleanup:
+        for i, ((meta, sql, _), (source, execute_query, parsed, duck, optimized)) in enumerate(
+                zip(pairs, expected, strict=True)):
+            if fingerprint(sql) != source or bool(meta.get("execute")) != execute_query:
+                return False
+            tree, p, d = sql_boundary(sql)
+            if not execute_query or (optimized_sql(tree) == optimized and d == duck and p == parsed):
+                continue
+            if case is None:
+                from sqlglot import find_tables
+                from sqlglot.executor import execute
+                from tests.test_executor import TestExecutor
+
+                case = TestExecutor("test_execute_tpcds")
+                case.setUpClass()
+                cleanup.callback(case.tearDownClass)
+            subset = {t.name: case.tpcds_tables[t.name] for t in find_tables(tree)}
             table = execute(tree, schema=TPCDS_SCHEMA, tables=subset)
             case.subtestHelper(i, table, tpch=False)
-    finally:
-        case.tearDownClass()
     return True
 
 
