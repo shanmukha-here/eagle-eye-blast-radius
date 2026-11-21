@@ -373,13 +373,17 @@ class LongCases:
             if path.startswith("tests/fixtures/"):
                 if self.impact.files.get(path, {}).get(0) is None:
                     return None
-            elif not self.verified_source(path, hunks):
+            elif (not path.startswith("sqlglot/") or not path.endswith(".py")
+                  or path.endswith("/__init__.py")):
                 return None
             readers = self.impact.files.get(path, {}).get(0, 0)
             if (readers & self.scheduler.bits[test] or
                     test in self.recovery_scope(text, {test}, edits={path: hunks})):
                 candidates.append(path)
         if len(candidates) != 1 or not candidates[0].startswith("sqlglot/"):
+            return None
+        if not all(self.verified_source(path, hunks) for path, hunks in edits.items()
+                   if path.startswith("sqlglot/")):
             return None
         path, = candidates
         for section in re.split(r"(?=^diff --git )", text, flags=re.MULTILINE)[1:]:

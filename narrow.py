@@ -7,6 +7,7 @@ from pathlib import Path
 from impact import patched, split_diff, syntax, UnknownChange
 
 
+@lru_cache(maxsize=96)
 def imports(tree):
     edges = []
     def visit(node, context):
@@ -25,7 +26,7 @@ def imports(tree):
             elif isinstance(value, ast.AST):
                 visit(value, context + (field,))
     visit(tree, ())
-    return edges
+    return tuple(edges)
 
 
 def literal_defaults(old, new):

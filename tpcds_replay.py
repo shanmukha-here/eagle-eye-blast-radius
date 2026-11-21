@@ -13,6 +13,9 @@ from optimizer_probe import local_edit, verify_queries
 from refine import bindings, regions
 
 
+QUERY_MODULES = ("sqlglot/optimizer/", "sqlglot/executor/", "sqlglot/planner.py", "sqlglot/schema.py")
+
+
 def estimated_cpu(checks):
     """Allow for a cold import and a complete result check on affected stages."""
     complete = sum(whole or not checkpoint for _, _, checkpoint, whole in checks)
@@ -79,8 +82,7 @@ class QueryGate:
         if len(edits) != 1:
             return None
         path, hunks = next(iter(edits.items()))
-        prior_scope = (path.startswith(("sqlglot/optimizer/", "sqlglot/executor/"))
-                       or path in ("sqlglot/planner.py", "sqlglot/schema.py"))
+        prior_scope = path.startswith(QUERY_MODULES[:2]) or path in QUERY_MODULES[2:]
         if (not path.startswith("sqlglot/") or path.endswith("/__init__.py")
                 or self.index.get("boundary:" + path) or not prior_scope and observed is None):
             return None
@@ -166,6 +168,8 @@ class QueryGate:
         """Check late TPC-DS candidates against the complete patched tree."""
         if (self.index is None or self.recovery_cpu < 0.65 or
                 not any(self.test in group for group in workers)):
+            return workers
+        if not any(f"diff --git a/{path}" in text for path in QUERY_MODULES):
             return workers
         started = seconds()
 
