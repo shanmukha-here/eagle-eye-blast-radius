@@ -34,6 +34,7 @@ class Miniatures:
         reduced = mask & ~bit
         gain = (cost(scheduler, mask) - cost(scheduler, reduced)) / 1000
         timeout = min(2.0, gain * 0.6)
+        timeout = getattr(self, "cpu_limit", float)(timeout)
         if timeout < 0.7 or self.used + timeout > 40:
             return mask
         self.used += timeout

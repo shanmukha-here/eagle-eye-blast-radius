@@ -49,8 +49,9 @@ def build_configuration(path, before, after):
 
 
 class Surface:
-    def __init__(self, impact, directory):
+    def __init__(self, impact, directory, references):
         self.impact = impact
+        self.references = references
         index = directory / "project_readers.json"
         data = json.loads(index.read_bytes()) if index.is_file() else {}
         self.reads = data.get("files", {})
@@ -87,7 +88,8 @@ class Surface:
             if not (old in self.impact.files or old in details.lines or old in details.imports):
                 return None
             observed |= (details.imports.get(old, 0) | details.dialects.get(old, 0) |
-                         self.impact.visitors.get(old, 0) | self.impact.files.get(old, {}).get(0, 0))
+                         self.impact.visitors.get(old, 0) | self.impact.files.get(old, {}).get(0, 0) |
+                         self.references.get(old, 0))
         if new:
             directory, _, basename = new.rpartition("/")
             name = Path(new).stem

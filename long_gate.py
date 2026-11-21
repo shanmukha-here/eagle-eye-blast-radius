@@ -110,6 +110,7 @@ class LongGate:
                 return workers
             cap = min(cap, 4.0 - earlier)
         minimum = 1.35 if targets[0][1] == "tpcds" else 0.25
+        cap = getattr(self, "cpu_limit", float)(cap)
         if cap < minimum:
             return workers
         reuse_file = reuse() if reuse is not None and targets[0][1] == "tpcds" else None

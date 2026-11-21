@@ -190,6 +190,7 @@ class ReferenceReplay:
                 reduced = self.scheduler.repack(selected - {number}, plan)
                 gain = (self.scheduler.cost(plan) - self.scheduler.cost(reduced)) / 1000
                 cap = min(self.budget, 3.0, gain * 0.65)
+                cap = getattr(self, "cpu_limit", float)(cap)
                 if cap < 0.45:
                     continue
                 self.budget -= cap

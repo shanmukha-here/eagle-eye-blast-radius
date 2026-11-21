@@ -224,6 +224,7 @@ class Execution:
         # Repacking can leave the same long test on the critical worker even
         # after many cheap tests pass. Skip work whenever it cannot pay for itself.
         cap = min(self.budget, self.deadline-time.monotonic(), gain * 0.8, 2.5)
+        cap = getattr(self, "cpu_limit", float)(cap)
         if cap < 0.3:
             return mask
         started = time.monotonic()

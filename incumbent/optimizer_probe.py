@@ -103,7 +103,8 @@ class Replay:
         compare_graphs_only = path.startswith("sqlglot/optimizer/") and not whole
         payload = json.dumps([path, source, queries, compare_graphs_only]).encode()
         timeout = min(7, benefit / 2)
-        if self.reserved_seconds + timeout > 60:
+        timeout = getattr(self, "cpu_limit", float)(timeout)
+        if timeout < 0.75 or self.reserved_seconds + timeout > 60:
             return mask
         self.reserved_seconds += timeout
         if self.relevant is not None and not self.relevant(mask, reduced):

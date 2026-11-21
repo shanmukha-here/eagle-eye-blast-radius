@@ -142,6 +142,9 @@ class ExactTests:
         return self.scheduler.repack(failed | {n for w in plan for n in w}, plan)
 
     def run(self, edits, names, cap, collect):
+        cap = getattr(self, "cpu_limit", float)(cap)
+        if cap < (0.5 if collect else 0.23):
+            return None
         started = time.monotonic()
 
         def used():

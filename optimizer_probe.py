@@ -232,6 +232,9 @@ class Replay:
         queries = [[*self.cases[i], False] for i in opt] + [[*self.cases[i], True] for i in whole]
         payload = json.dumps([path, source, queries, execution_only, fuse]).encode()
         timeout = min(10 if execution_only else 5, benefit / 2)
+        timeout = getattr(self, "cpu_limit", float)(timeout)
+        if timeout < 0.75:
+            return mask
         if self.reserved_seconds + timeout > 60:
             return mask
         self.reserved_seconds += timeout

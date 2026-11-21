@@ -11,6 +11,7 @@ from incumbent.impact import Impact as IncumbentImpact
 from incumbent.refine import Details as IncumbentDetails
 from incumbent.optimizer_probe import Replay as IncumbentReplay
 
+from cpu_budget import CpuBudget, seconds
 from dependencies import Dependencies
 from decision import Execution, PatchWorkspace
 from flow import Flow
@@ -165,6 +166,7 @@ def replay_body(impact, text):
 
 
 def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_name("base.z")):
+    started = seconds()
     tests = json.loads((data / "tests.json").read_bytes())["tests"]
     profile = json.loads(zlib.decompress(map_path.read_bytes()))
     data_map = json.loads(zlib.decompress(map_path.with_name("details.z").read_bytes()))
@@ -196,17 +198,23 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
 
     incumbent.details.import_valid = shared_import
     patches = sorted((data / "commits").glob("*.patch"))
+    budget = CpuBudget(started, len(patches))
     narrow = Narrow(impact, map_path.parent)
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     observation = ObservationIndex(impact, map_path.with_name("values.z"))
-    surface = Surface(impact, map_path.parent)
+    surface = Surface(impact, map_path.parent, observation.references)
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
     verify = ExactTests(scheduler, tests, base, len(patches), map_path.with_name("unit_ready.json"))
+    for check in (impact.details, incumbent.details, impact.details.replay,
+                  incumbent.details.replay, impact.details.miniatures,
+                  execution, gate, references, verify):
+        check.cpu_limit = budget.cap
     parser_bit = impact.details.miniatures.tests.get("parser", 0)
     parser_id = next((number for number, bit in scheduler.bits.items() if bit and bit == parser_bit), None)
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
-    for path in patches:
+    for index, path in enumerate(patches):
+        budget.remaining_patches = len(patches) - index
         before = mask = impact.full
         try:
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
