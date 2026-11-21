@@ -1,6 +1,7 @@
 """Build match, coverage and size features without retaining patch or test identities."""
 import ast
 from difflib import SequenceMatcher
+import keyword
 import math
 from pathlib import Path
 import re
@@ -8,13 +9,44 @@ import re
 from impact import UnknownChange, patched, split_diff, syntax
 from module_topology import addition, hard_topology, opaque_format
 from observation_index import default_changes
-from receiver_edits import declaration
+from receiver_edits import classes, declaration
 from refine import changed_fields
 from registry_guard import changes_routing
 
 FORMS = ("body", "member", "scalar declaration", "fixture", "mixed", "layout")
 WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]+")
-FEATURE_COUNT = len(FORMS) + 16
+FEATURE_COUNT = len(FORMS) + 19
+
+
+def member_change(before, after):
+    """Recognize one plain added or removed member, including typed methods."""
+    prior = dict(classes(before.body))
+    current = dict(classes(after.body))
+    reference = ast.dump(before)
+    for owner, old in prior.items():
+        new = current.get(owner)
+        if new is None or abs(len(new.body) - len(old.body)) != 1:
+            continue
+        before_text = list(map(ast.dump, old.body))
+        after_text = list(map(ast.dump, new.body))
+        changes = [v for v in SequenceMatcher(None, before_text, after_text, autojunk=False).get_opcodes()
+                   if v[0] != "equal"]
+        if len(changes) != 1:
+            continue
+        tag, i, j, k, stop = changes[0]
+        if tag not in ("insert", "delete"):
+            continue
+        item = new.body[k] if tag == "insert" else old.body[i]
+        if not isinstance(item, ast.FunctionDef) or item.decorator_list or item.name.startswith("__"):
+            continue
+        saved = new.body
+        try:
+            new.body = saved[:k] + old.body[i:j] + saved[stop:]
+            if ast.dump(after) == reference:
+                return owner, item.name
+        finally:
+            new.body = saved
+    return None
 
 
 def symbol_words(source):
@@ -109,7 +141,7 @@ class RiskFeatures:
                 else:
                     sites = [key for key in before if key not in after or before[key][2] != after[key][2]]
                     old_ast = syntax(path, source)[0]
-                    member = declaration(old_ast, after_ast)
+                    member = declaration(old_ast, after_ast) or member_change(old_ast, after_ast)
                     if member:
                         families.add("member")
                         words.update(part.casefold() for part in (*member[0].split("."), member[1]))
@@ -131,6 +163,10 @@ class RiskFeatures:
             if py and changes_routing(self.impact, text):
                 return None
             form = "mixed" if len(edits) > 1 else next(iter(families))
+            changed_text = "\n".join(line[1:] for line in text.splitlines()
+                                     if line.startswith(("+", "-")) and not line.startswith(("+++", "---")))
+            words.update(word for word in symbol_words(changed_text)
+                         if not keyword.iskeyword(word) and word not in {"self", "cls"})
             lexical = [self.names.mask("word:" + word) for word in sorted(words)[:40]]
             dialects = [self.names.mask("word:" + stem) for stem in sorted(modules)]
             common = tuple(int(form == other) for other in FORMS) + (
@@ -141,18 +177,21 @@ class RiskFeatures:
         except (OSError, UnknownChange, SyntaxError, UnicodeError, RecursionError, ValueError):
             return None
 
-    def rows(self, text, selected):
+    def rows(self, text, selected, rules=None):
         context = self.analyze(text)
         if context is None:
             return None
         form, common, lines, functions, lexical, dialects, modules = context
         count = len(selected)
+        rules = rules or {}
+        routing = (int(count == len(self.tests)), int(bool(rules.get("receiver_declaration"))),
+                   int(bool(rules.get("line_cleared"))))
         cohort = int(math.log2(max(1, count)))
         output = []
         for n in selected:
             bit = self.scheduler.bits[n]
             stem, test_count = self.tests[n]
-            output.append(common + (
+            output.append(common + routing + (
                 cohort, min(30000, self.scheduler.durations[n]), min(test_count, 200),
                 capped_count(bit, lines), capped_count(bit, functions),
                 capped_count(bit, lexical), int(any(bit & mask for mask in dialects)),

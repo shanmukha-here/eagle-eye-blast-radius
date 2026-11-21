@@ -185,10 +185,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     receivers = ReceiverEdits(map_path.with_name("receiver.index"), impact)
     precision = Precision(map_path.parent, impact, scheduler, queries.test)
     risk = RiskPolicy(map_path.parent, impact, precision, scheduler, tests)
+    fallback_plan = scheduler.intersect(impact.full, impact.full)
     report = os.environ.get("BLAST_ASSERTION_REPORT") == "1"
 
     def emit(path, plan, beginning, text=None):
-        plan = risk.apply(text, plan)
+        plan = risk.apply(text, plan, {**queries.stats, **precision.stats} if text else None)
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
@@ -217,21 +218,21 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         before = mask = impact.full
         try:
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
-                plan = scheduler.intersect(before, mask)
+                plan = fallback_plan
             else:
                 text = path.read_bytes().decode("utf-8")
                 if hard_topology(text) or opaque_format(text):
-                    emit(path, scheduler.intersect(before, mask), beginning)
+                    emit(path, fallback_plan, beginning)
                     continue
                 if changes_routing(impact, text):
                     observed = precision.registry(text)
-                    plan = (scheduler.intersect(before, mask) if observed is None else
+                    plan = (fallback_plan if observed is None else
                             json.loads(scheduler.schedule(observed, pad=False)))
                     emit(path, plan, beginning)
                     continue
                 metadata = surface.select(text)
                 if addition(text) and metadata is None:
-                    emit(path, scheduler.intersect(before, mask), beginning)
+                    emit(path, fallback_plan, beginning)
                     continue
                 risk_text = text
                 direct = observation.edit(text) if metadata is None else ("metadata", metadata)
@@ -288,7 +289,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                             plan = scheduler.repack(retained, plan)
                     plan = verify.refine(text, plan)
         except UnicodeError:
-            plan = scheduler.intersect(impact.full, impact.full)
+            plan = fallback_plan
         emit(path, plan, beginning, risk_text)
 
 

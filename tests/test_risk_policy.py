@@ -1,8 +1,9 @@
+import ast
 import math
 from pathlib import Path
 from types import SimpleNamespace
 
-from risk_features import RiskFeatures
+from risk_features import RiskFeatures, member_change
 from risk_policy import MISS_MS, charge, choose, hazard
 from selector import Scheduler
 
@@ -28,3 +29,20 @@ def test_unseen_formats_do_not_get_risk_features():
                    "diff --git a/setup.cfg b/setup.cfg\n--- a/setup.cfg\n+++ b/setup.cfg\n@@ -1 +1 @@\n-old\n+new\n",
                    "diff --git a/sqlglot/a.py b/sqlglot/b.py\nrename from sqlglot/a.py\nrename to sqlglot/b.py\n"):
         assert classifier.analyze(change) is None
+
+
+def test_hybrid_prices_a_whole_worker_on_a_packing_plateau():
+    rows = [{"number": i, "id": str(i), "seconds": 0.05} for i in range(2)]
+    scheduler = Scheduler(rows, ["0", "1"])
+    p = {0: 0.001, 1: 0.001}
+    assert choose(scheduler, [[0, 1]], p, "greedy")[0] == [[0, 1]]
+    assert choose(scheduler, [[0, 1]], p, "hybrid")[0] == []
+
+
+def test_member_risk_form_requires_an_isolated_undecorated_definition():
+    source = "class Rule:\n    flag = True\n    def build(self, count: int): return count\n"
+    unchanged = "class Rule:\n    flag = True\n"
+    assert member_change(ast.parse(source), ast.parse(unchanged)) == ("Rule", "build")
+    assert member_change(ast.parse(source), ast.parse(unchanged + "import os\n")) is None
+    decorated = source.replace("    def build", "    @staticmethod\n    def build")
+    assert member_change(ast.parse(decorated), ast.parse(unchanged)) is None

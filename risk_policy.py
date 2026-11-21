@@ -48,20 +48,28 @@ def choose(scheduler, workers, estimates, style="hybrid", narrow=None):
         queue = list(dict.fromkeys(queue + sorted(eligible, key=lambda n: (-duration[n], n))[:6]))
     removed = set()
     total = 0.0
+    current_cost = original
     for _ in range(4):
-        previous = value
-        options = []
+        winner = None
         for n in queue:
-            if n not in removed:
-                score = value
-                consider(removed | {n}, total + hazards[n])
-                if value < score:
-                    options.append(n)
-        if value == previous:
+            if n in removed:
+                continue
+            proposed = total + hazards[n]
+            extra = charge(proposed) - charge(total)
+            plan = scheduler.repack(current - (removed | {n}), workers)
+            cost = scheduler.cost(plan)
+            saved = current_cost - cost
+            if saved <= extra + 30:
+                continue
+            priority = (saved / max(extra, 1e-9), saved - extra, -n)
+            if winner is None or priority > winner[0]:
+                winner = priority, n, plan, cost, proposed
+        if winner is None:
             break
-        n = options[-1]
+        _, n, best, current_cost, total = winner
         removed.add(n)
-        total += hazards[n]
+        value = current_cost + charge(total)
+        dropped_risk = charge(total) / MISS_MS
         if len(removed) == len(current):
             break
 
@@ -99,14 +107,14 @@ class RiskPolicy:
         self.scheduler = scheduler
         self.stats = {}
 
-    def apply(self, text, workers):
+    def apply(self, text, workers, rules=None):
         self.stats = {}
         if not workers or self.features is None or text is None:
             return workers
         selected = sorted(n for group in workers for n in group)
         if any(not self.scheduler.bits[n] for n in selected):
             return workers
-        features = self.features.rows(text, selected)
+        features = self.features.rows(text, selected, rules)
         if features is None:
             return workers
         form, rows = features
