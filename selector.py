@@ -181,6 +181,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     incumbent.details.observers = Observers(json.loads(zlib.decompress((legacy / "observers.z").read_bytes())))
     incumbent.details.flow.none_safe = incumbent.details.observers.none_safe
     incumbent.details.replay = IncumbentReplay(profile["ids"], base, legacy)
+    incumbent.details.replay.query_lines = (impact.details.replay.line_ids, impact.details.replay.line_pool)
+    incumbent.details.replay.covered_lines = impact.details.lines
     incumbent.scheduler = scheduler
     incumbent.base = impact.base
     legacy_import = incumbent.details.import_valid

@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from checkpoint import digest, table_digest
+from refine import regions
 from incumbent.import_check import PatchedModule
 
 
@@ -57,13 +58,36 @@ class Replay:
         self.last_seconds = 0.0
         self.last_mismatch = None
         self.graph_changed = False
+        self.query_lines = None
+        self.covered_lines = {}
 
-    def select(self, path, source, key, old, new, mask, scheduler):
+    def unexecuted(self, path, location, old, new, opt, whole):
+        if self.query_lines is None or whole or not path.startswith("sqlglot/optimizer/"):
+            return False
+        spans = regions(old, new)
+        if len(spans) != 1 or spans[0][0] != spans[0][1]:
+            return False
+        line = spans[0][0]
+        users = self.covered_lines.get(path, {}).get(line, 0)
+        locations, pool = self.query_lines
+        if not users or users & self.test or f"{location}@{line}" in locations:
+            return False
+        touched = 0
+        for name, index in locations.items():
+            if name.startswith(location + "@"):
+                a, b = pool[index]
+                if a < 0 or b != 0:
+                    return False
+                touched |= a
+        return bool(touched) and not (sum(1 << i for i in opt) & ~touched)
+
+    def select(self, path, source, key, old, new, mask, scheduler, same_bindings=False):
         if (not mask & self.test or scheduler is None
                 or path.endswith("/__init__.py") or path == "sqlglot/serde.py" or key[-2].startswith("__")):
             return mask
         qualified = ".".join(str(x) for x in key[:-1])
-        cases = self.uses.get(f"{path}:{old[0]}:{qualified}")
+        location = f"{path}:{old[0]}:{qualified}"
+        cases = self.uses.get(location)
         if not cases or not local_edit(old[3], new[3]):
             return mask
         reduced = mask & ~self.test
@@ -84,6 +108,8 @@ class Replay:
         self.reserved_seconds += timeout
         if self.relevant is not None and not self.relevant(mask, reduced):
             return mask
+        if same_bindings and self.unexecuted(path, location, old[3], new[3], opt, whole):
+            return reduced
         started = time.monotonic()
         try:
             check = subprocess.run(

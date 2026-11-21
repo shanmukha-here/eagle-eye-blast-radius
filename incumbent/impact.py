@@ -118,7 +118,7 @@ class Impact:
                 and replay and not readers & replay.test):
             key = affected[0]
             selected = replay.select(path, modified, key, scopes[key], new_scopes[key], selected,
-                                     getattr(self, "scheduler", None))
+                                     getattr(self, "scheduler", None), bool(refine))
         return selected
 
     def select(self, patch):
