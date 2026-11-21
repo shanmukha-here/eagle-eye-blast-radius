@@ -9,7 +9,7 @@ import re
 from impact import UnknownChange, patched, split_diff, syntax
 from module_topology import addition, hard_topology, opaque_format
 from observation_index import default_changes
-from receiver_edits import classes, declaration
+from receiver_edits import METHODS, classes, declaration
 from refine import changed_fields
 from registry_guard import changes_routing
 
@@ -47,6 +47,56 @@ def member_change(before, after):
         finally:
             new.body = saved
     return None
+
+
+def forwards_to_parent(method):
+    if len(method.body) != 1 or not isinstance(method.body[0], ast.Return):
+        return False
+    call = method.body[0].value
+    if (not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute)
+            or call.func.attr != method.name):
+        return False
+    parent = call.func.value
+    args = method.args
+    return (isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name)
+            and parent.func.id == "super" and not parent.args and not parent.keywords
+            and not args.posonlyargs and len(args.args) == 1 and not args.kwonlyargs
+            and not args.defaults and args.vararg is not None and args.kwarg is not None
+            and len(call.args) == 1 and isinstance(call.args[0], ast.Starred)
+            and isinstance(call.args[0].value, ast.Name) and call.args[0].value.id == args.vararg.arg
+            and len(call.keywords) == 1 and call.keywords[0].arg is None
+            and isinstance(call.keywords[0].value, ast.Name) and call.keywords[0].value.id == args.kwarg.arg)
+
+
+def enum_class(owner):
+    return any((base.id if isinstance(base, ast.Name) else
+                base.attr if isinstance(base, ast.Attribute) else "").endswith("Enum")
+               for base in owner.bases)
+
+
+def member_binding_changed(before, after, member):
+    owner, name = member
+    prior = dict(classes(before.body))[owner]
+    current = dict(classes(after.body))[owner]
+    if enum_class(prior) or enum_class(current):
+        return True
+    old_names = {node.name for node in prior.body if isinstance(node, METHODS)}
+    return name not in old_names and any(
+        isinstance(node, METHODS) and node.name == name and not forwards_to_parent(node)
+        for node in current.body
+    )
+
+
+def slot_declarations(tree):
+    def assignments():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                yield node, node.targets
+            elif isinstance(node, ast.AnnAssign):
+                yield node, (node.target,)
+
+    return tuple(ast.dump(node) for node, targets in assignments()
+                 if any(isinstance(target, ast.Name) and target.id == "__slots__" for target in targets))
 
 
 def symbol_words(source):
@@ -99,13 +149,14 @@ class RiskFeatures:
         self.tests = {row["number"]: (Path(row["file"]).stem.casefold().removeprefix("test_"),
                                       counts[row["file"]]) for row in tests}
 
-    def analyze(self, text):
+    def analyze(self, text, guard_bindings=False):
         if len(text) > 24000 or hard_topology(text) or opaque_format(text) or addition(text):
             return None
         try:
             edits = split_diff(text)
             if not edits or len(edits) > 4:
                 return None
+            composite = len(edits) > 1
             families = set()
             lines = []
             functions = []
@@ -142,10 +193,18 @@ class RiskFeatures:
                     sites = [key for key in before if key not in after or before[key][2] != after[key][2]]
                     old_ast = syntax(path, source)[0]
                     member = declaration(old_ast, after_ast) or member_change(old_ast, after_ast)
+                    if guard_bindings and composite and ("__slots__" in source or "__slots__" in new):
+                        if slot_declarations(old_ast) != slot_declarations(after_ast):
+                            return None
+                    defaults = default_changes(old_ast, after_ast) if not member else ()
                     if member:
+                        if guard_bindings and member_binding_changed(old_ast, after_ast, member):
+                            return None
                         families.add("member")
                         words.update(part.casefold() for part in (*member[0].split("."), member[1]))
-                    elif default_changes(old_ast, after_ast) or changed_fields(source, new):
+                    elif defaults or changed_fields(source, new):
+                        if guard_bindings and composite and defaults:
+                            return None
                         families.add("scalar declaration")
                     elif layout_only(source, new):
                         families.add("layout")
@@ -177,8 +236,8 @@ class RiskFeatures:
         except (OSError, UnknownChange, SyntaxError, UnicodeError, RecursionError, ValueError):
             return None
 
-    def rows(self, text, selected, rules=None):
-        context = self.analyze(text)
+    def rows(self, text, selected, rules=None, guard_bindings=False):
+        context = self.analyze(text, guard_bindings)
         if context is None:
             return None
         form, common, lines, functions, lexical, dialects, modules = context

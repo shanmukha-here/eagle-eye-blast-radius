@@ -3,7 +3,7 @@ import math
 from pathlib import Path
 from types import SimpleNamespace
 
-from risk_features import RiskFeatures, member_change
+from risk_features import RiskFeatures, member_binding_changed, member_change, slot_declarations
 from risk_model import DOUBLE, FORM_MAGIC, FORM_POLICY, HEADER, MAGIC, NODE, ROOT, RiskModel
 from risk_policy import MISS_MS, charge, choose, hazard
 from selector import Scheduler
@@ -64,3 +64,23 @@ def test_mmap_models_share_predictions_with_form_specific_pricing(tmp_path):
     assert mode == "greedy"
     assert model.raw((0,)) == original.raw((0,))
     assert model.probability((0,), scale) == 0.1
+
+
+def test_binding_guard_keeps_independent_overrides_but_allows_forwarding():
+    before = ast.parse("class Child(Parent):\n    label = 'child'\n")
+    changed = "class Child(Parent):\n    label = 'child'\n    def invoke(self, *args, **kwargs):\n"
+    forwards = ast.parse(changed + "        return super().invoke(*args, **kwargs)\n")
+    overrides = ast.parse(changed + "        return None\n")
+    permutes = ast.parse(changed + "        return super().invoke('other', *args, **kwargs)\n")
+    assert not member_binding_changed(before, forwards, ("Child", "invoke"))
+    assert member_binding_changed(before, overrides, ("Child", "invoke"))
+    assert member_binding_changed(before, permutes, ("Child", "invoke"))
+
+
+def test_binding_guard_detects_enum_and_slot_rewrites():
+    original_enum = ast.parse("class State(enum.StrEnum):\n    ACTIVE = 'active'\n")
+    revised_enum = ast.parse("class State(enum.StrEnum):\n    ACTIVE = 'changed'\n")
+    assert member_binding_changed(original_enum, revised_enum, ("State", "ACTIVE"))
+    original_slots = ast.parse("class State:\n    __slots__ = ('active',)\n")
+    revised_slots = ast.parse("class State:\n    __slots__ = ('changed',)\n")
+    assert slot_declarations(original_slots) != slot_declarations(revised_slots)

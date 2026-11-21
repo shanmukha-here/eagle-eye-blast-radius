@@ -114,7 +114,7 @@ class RiskPolicy:
         selected = sorted(n for group in workers for n in group)
         if any(not self.scheduler.bits[n] for n in selected):
             return workers
-        features = self.features.rows(text, selected, rules)
+        features = self.features.rows(text, selected, rules, guard_bindings=True)
         if features is None:
             return workers
         form, rows = features
