@@ -3,6 +3,7 @@
 import contextlib
 import json
 import multiprocessing
+from mmap import ACCESS_READ, mmap
 import os
 import resource
 import signal
@@ -11,9 +12,13 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from struct import Struct
 
 from decision import overlay
 from impact import split_diff, UnknownChange
+
+
+MICROSECONDS = Struct("<I")
 
 
 class UnitOutcomes(unittest.TestResult):
@@ -119,6 +124,11 @@ class ExactTests:
         self.numbers = {v: k for k, v in self.nodes.items()}
         self.root = base.resolve()
         self.ready = json.loads(ready.read_bytes())
+        self.profile = None
+        profile = ready.with_name("isolated_cpu.bin")
+        if profile.is_file():
+            with profile.open("rb") as file:
+                self.profile = mmap(file.fileno(), 0, access=ACCESS_READ)
         self.ctx = multiprocessing.get_context("fork")
         self.remaining = min(20.0, count * 0.4)
         self.collection_remaining = min(14.0, count * 0.35)
@@ -151,7 +161,8 @@ class ExactTests:
         else:
             fixtures = {node.rsplit("::", 1)[0]: self.ready[node] for node in names}
             expected += sum(fixtures.values()) / 1000
-        if expected > 2.55:
+        expected = max(expected, self.fixture_cpu(selected))
+        if expected > min(2.55, self.scheduler.cost(plan) / 1450):
             return plan
         cap = min(remaining, self.scheduler.cost(plan) / 1250, max(0.9, 1.45 * expected + 0.65))
         result = self.run(edits, names, cap, collect=False, workspace=workspace, cohort=cohort)
@@ -162,6 +173,21 @@ class ExactTests:
                     return plan
                 return self.scheduler.repack(selected - passed, plan)
         return plan
+
+    def fixture_cpu(self, selected):
+        """Estimate a fresh class fixture even when a test itself is cheap."""
+        if self.profile is None:
+            return 0.0
+        classes = {}
+        for number in selected:
+            bit = self.scheduler.bits[number]
+            start = (bit.bit_length() - 1) * MICROSECONDS.size
+            if start < 0 or start + MICROSECONDS.size > len(self.profile):
+                continue
+            cost, = MICROSECONDS.unpack_from(self.profile, start)
+            fixture = self.nodes[number].rsplit("::", 1)[0]
+            classes[fixture] = max(classes.get(fixture, 0), cost)
+        return sum(classes.values()) / 1e6
 
     def collection(self, patch, plan):
         cap = min(self.collection_remaining, self.deadline - time.monotonic(), 3.4)

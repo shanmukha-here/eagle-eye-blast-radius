@@ -3,8 +3,10 @@
 import ast
 from functools import lru_cache
 
+from dependencies import name_bits
 from impact import UnknownChange, patched, split_diff, syntax
 from precision_index import PrecisionIndex
+from receiver_edits import classes, plain_method
 
 
 FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
@@ -52,6 +54,10 @@ class Recovery:
             return broad, False
         if any(kind in ("class", "other") for _, _, kind in edits):
             return broad, False
+        if len(edits) == 1 and edits[0] not in previous and edits[0][2] == "function":
+            inert = self.inert_method(path, after, *edits[0][:2])
+            if inert is not None:
+                return inert, True
         details = self.impact.details
         module = path.removesuffix(".py").replace("/", ".")
         observed = 0
@@ -84,6 +90,24 @@ class Recovery:
             direct &= bool(reads | reach) and kind in ("function", "assignment") and not member.startswith("__")
             observed |= reads | reach or classes or broad
         return observed or broad, direct and bool(observed)
+
+    def inert_method(self, path, tree, owner, name):
+        """Track namespace readers for a plain, previously unreferenced member."""
+        if not owner:
+            return None
+        tag = path.removesuffix(".py").replace("/", ".") + ":" + owner
+        if not self.receivers.bits("plain:" + tag):
+            return None
+        details = self.impact.details
+        known = details.access.names
+        if all(known[i // 8] & (1 << (i % 8)) for i in name_bits(name.encode(), len(known))):
+            return None
+        cls = dict(classes(tree.body)).get(owner)
+        if cls is None or not any(getattr(node, "name", None) == name and plain_method(node)
+                                  for node in cls.body):
+            return None
+        return (self.receivers.bits(f"r:{tag}:*") | details.flow.opaque |
+                getattr(details.flow, "reflect", 0) | self.impact.files.get(path, {}).get(0, 0))
 
     @lru_cache(maxsize=8)
     def declarations(self, text):

@@ -4,6 +4,7 @@ from impact import UnknownChange, patched, split_diff
 from precision_body import evidence, footprint, range_mask
 from precision_index import PrecisionIndex
 from registry_keys import one_entry
+from risk_features import edit_lines
 
 
 class Precision:
@@ -74,12 +75,30 @@ class Precision:
         if self.index is None:
             return False
         changes = footprint(self.impact, text)
-        if changes is None:
-            return False
         if not self.index.mask("!import_lines"):
             return False
+        if changes is None:
+            return self.short_body_outside_imports(text)
         return not any(range_mask(self.index.mask, "IL", path, body | anchors | control)
                        for path, sites in changes.items() for _, _, (body, anchors, control) in sites)
+
+    def short_body_outside_imports(self, text):
+        """Use the import trace for nested function bodies as well."""
+        try:
+            edits = split_diff(text)
+            for path, hunks in edits.items():
+                if not path.startswith("sqlglot/") or not path.endswith(".py") or path.endswith("/__init__.py"):
+                    return False
+                source, (outer, scopes), _ = self.impact.base(path)
+                _, (new_outer, revised), _ = syntax(path, patched(source, hunks))
+                if outer != new_outer or scopes.keys() != revised.keys():
+                    return False
+                lines, _, _ = edit_lines(hunks)
+                if any(self.index.mask(f"IL:{path}:{line}") for line in lines):
+                    return False
+            return bool(edits)
+        except (OSError, SyntaxError, UnknownChange, UnicodeError, ValueError, RecursionError):
+            return False
 
     def local_plan(self, text):
         """Use a complete line trace first when a small local body has direct observers."""

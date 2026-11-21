@@ -44,6 +44,7 @@ tools/*
 !reference_replay.py
 !reference_reads.json
 !exact_tests.py
+!isolated_cpu.bin
 !ready_imports.json
 !memo_witness.py
 !parser_signal.py

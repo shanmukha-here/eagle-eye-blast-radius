@@ -50,7 +50,7 @@ COPY decision.py selector.py narrow.py fixture_reads.json long_gate.py parser_si
 COPY observation_index.py value_observations.py values.z values_eq.z ready_imports.json fixture_inputs.json ./
 COPY tools/build_observation_file.py /build_observation_file.py
 RUN PYTHONPATH=/app python /build_observation_file.py /app
-COPY exact_tests.py module_topology.py ./
+COPY exact_tests.py module_topology.py isolated_cpu.bin ./
 COPY tools/build_unit_ready.py /build_unit_ready.py
 RUN SKIP_INTEGRATION=0 PYTHONPATH=/app:/base python /build_unit_ready.py /app/base.z /app/unit_ready.json /base
 COPY reference_replay.py reference_reads.json ./
