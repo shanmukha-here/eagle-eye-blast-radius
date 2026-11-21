@@ -296,6 +296,14 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             plan = scheduler.repack(selected, plan)
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace
+        elif text and plan:
+            selected = {n for group in plan for n in group}
+            active = selected.intersection(long_cases.tests)
+            if active:
+                retained = long_cases.ordinary_scope(text, active)
+                if retained != active:
+                    precision.stats["ordinary_long_unobserved"] = len(active - retained)
+                    plan = scheduler.repack(selected.difference(active - retained), plan)
         if text:
             checked = verify.certify_small(text, plan, precision.short_certificate)
             if checked != plan:

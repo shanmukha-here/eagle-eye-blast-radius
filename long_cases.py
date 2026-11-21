@@ -205,6 +205,7 @@ class LongCases:
             self.fingerprints = (directory / "long_cases.fingerprints").read_bytes()
         self.ctx = multiprocessing.get_context("fork")
         self.recovery_cpu = min(9.0, count * 0.15)
+        self.module_lines = {}
         self.stats = {}
 
     def changes(self, text, declaration=False):
@@ -265,14 +266,15 @@ class LongCases:
         except (OSError, UnknownChange, UnicodeError, ValueError):
             return None
 
-    def recovery_scope(self, text, active):
+    def recovery_scope(self, text, active, edits=None):
         """Keep long tests with a recorded route to the recovered module."""
         if self.index is None or not self.index.mask("module_coverage"):
             return active
-        try:
-            edits = split_diff(text)
-        except UnknownChange:
-            return active
+        if edits is None:
+            try:
+                edits = split_diff(text)
+            except UnknownChange:
+                return active
         sources = []
         fixtures = set()
         observed = 0
@@ -345,6 +347,39 @@ class LongCases:
             )
             return self.scheduler.repack(chosen - cleared, workers)
         return workers
+
+    def verified_source(self, path, hunks):
+        if (not path.startswith("sqlglot/") or not path.endswith(".py")
+                or path.endswith("/__init__.py")):
+            return False
+        source = self.impact.base(path)[0]
+        before = syntax(path, source)[0]
+        after = syntax(path, patched(source, hunks))[0]
+        return imports(before) == imports(after)
+
+    def ordinary_scope(self, text, active):
+        """Combine independent cases with full test line and import evidence."""
+        if self.index is None or not self.index.mask("module_coverage"):
+            return active
+        try:
+            edits = split_diff(text)
+            if len(edits) > 4:
+                return active
+            retained = self.recovery_scope(text, active, edits=edits)
+            if retained == active:
+                return active
+            for path in edits:
+                if path not in self.module_lines:
+                    bits = 0
+                    for observed in self.impact.details.lines.get(path, {}).values():
+                        bits |= observed
+                    self.module_lines[path] = bits
+                retained.update(test for test in active if self.scheduler.bits[test] & self.module_lines[path])
+            if retained != active and all(self.verified_source(path, hunks) for path, hunks in edits.items()):
+                return retained
+            return active
+        except (OSError, SyntaxError, UnicodeError, ValueError, UnknownChange, RecursionError):
+            return active
 
     def recovery_replay(self, text, workers, base, workspace_factory, active, deadline):
         """Replay restored long tests with complete single-module evidence."""
