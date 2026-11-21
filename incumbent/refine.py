@@ -84,7 +84,14 @@ def literal_edit(left, right):
 
 
 class Details:
-    def __init__(self, data, ids, root, access=None):
+    def __init__(self, data, ids, root, access=None, shared=None):
+        if shared is not None:
+            # The selectors read the same decoded coverage and have separate
+            # refinement state, profilers and replay budgets.
+            for key in ("access", "lines", "positions", "operand_types", "dialects", "types",
+                        "references", "full", "ids", "imports", "test_files", "root"):
+                setattr(self, key, getattr(shared, key))
+            return
         self.access = access
         pool = [int(v, 16) for v in data["bits"]]
         self.lines = {

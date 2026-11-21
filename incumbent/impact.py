@@ -11,9 +11,12 @@ from impact import UnknownChange, new_source, patched, split_diff, syntax
 
 
 class Impact:
-    def __init__(self, root, profile, details=None):
+    def __init__(self, root, profile, details=None, shared=None):
         self.details = details
         self.root = Path(root)
+        if shared is not None:
+            self.files, self.visitors, self.full = shared.files, shared.visitors, shared.full
+            return
         self.files = {
             path: {int(k): int(v, 16) for k, v in rows.items()}
             for path, rows in profile["files"].items()

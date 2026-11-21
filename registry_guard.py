@@ -55,6 +55,7 @@ def bindings(path, source):
     return tuple(state)
 
 
+@lru_cache(maxsize=8)
 def changes_routing(impact, text):
     try:
         new_routing = WORDS.search(text) is not None

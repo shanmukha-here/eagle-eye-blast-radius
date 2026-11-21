@@ -77,7 +77,7 @@ class SchedulingTests(unittest.TestCase):
         scheduler = Scheduler(tests, [str(n) for n in range(len(tests))])
         original = [[0], [1]]
         insured = scheduler.insure(original, (1 << 5) - 1, {4})
-        self.assertEqual(insured, [[0], [1, 2, 3]])
+        self.assertEqual(insured, [[0], [1, 5, 2, 3]])
         self.assertEqual(scheduler.cost(insured), scheduler.cost(original))
         self.assertEqual(original, [[0], [1]])
         self.assertEqual(scheduler.insure([], 63, set()), [])

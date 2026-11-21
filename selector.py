@@ -220,7 +220,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     impact.details.startup = Startup(map_path.parent)
     impact.details.miniatures = Miniatures(profile["ids"], base, map_path.parent)
     impact.scheduler = scheduler
-    incumbent = IncumbentImpact(base, profile, IncumbentDetails(data_map, profile["ids"], base, access))
+    legacy_details = IncumbentDetails(data_map, profile["ids"], base, access, shared=impact.details)
+    incumbent = IncumbentImpact(base, profile, legacy_details, shared=impact)
     legacy = map_path.parent / "incumbent"
     incumbent.details.flow = Flow(flow_map)
     incumbent.details.observers = Observers(json.loads(zlib.decompress((legacy / "observers.z").read_bytes())))
@@ -243,6 +244,10 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     queries = QueryGate(map_path.parent, impact, scheduler, tests)
     long_cases = LongCases(map_path.parent, impact, scheduler, tests, len(patches))
+    short_bits = 0
+    for number, bit in scheduler.bits.items():
+        if number not in long_cases.tests:
+            short_bits |= bit
     receivers = ReceiverEdits(map_path.with_name("receiver.index"), impact)
     precision = Precision(map_path.parent, impact, scheduler, queries.test)
     risk = RiskPolicy(map_path.parent, impact, precision, scheduler, tests)
@@ -260,6 +265,12 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         except UnknownChange:
             pass
         return mask
+
+    def recovery_supersedes(mask, recovered):
+        if recovered is None or recovered[1]:
+            return False
+        coverage = recovered[0]
+        return not mask & scheduler.known & ~coverage and bool(coverage & short_bits & ~mask)
 
     def emit(path, plan, beginning, text=None, verified=False):
         recovered = None if verified else recovery.declarations(text)
@@ -394,12 +405,21 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     if observed_plan is not None and (
                         kind in ("default", "attribute", "import", "metadata", "syntax") or scheduler.cost(observed_plan) <= 3000
                     ):
+                        if kind not in ("metadata", "fixture", "syntax") and recovery_supersedes(observed, recovered):
+                            emit(path, [], beginning, risk_text)
+                            continue
                         plan = references.apply(text, observed_plan)
                         plan = verify.refine(text, plan)
                         emit(path, plan, beginning, risk_text, verified=kind in ("metadata", "fixture"))
                         continue
                 with PatchWorkspace(base.resolve(), text) as workspace:
                     mask = execution.refine(text, narrow.select(text, impact.select(text)), workspace)
+                    # Every executable candidate below is bounded by this
+                    # mask. Recovery will cover them and add a short test,
+                    # forcing the same freshly packed plan.
+                    if recovery_supersedes(mask, recovered):
+                        emit(path, [], beginning, risk_text)
+                        continue
                     keep = 0
                     legacy = incumbent.details.replay
                     legacy.graph_changed = False
