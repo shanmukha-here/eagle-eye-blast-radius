@@ -21,7 +21,7 @@ RUN python -m pip install --disable-pip-version-check --no-cache-dir --no-deps -
 ENV SKIP_INTEGRATION=0 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHON_CPU_COUNT=2
 COPY query_sentinel.py memo_witness.py ./
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python query_sentinel.py
-COPY decision.py selector.py narrow.py fixture_reads.json long_gate.py ./
+COPY decision.py selector.py narrow.py fixture_reads.json long_gate.py parser_signal.py ./
 COPY incumbent/ ./incumbent/
 RUN ln -s ../replay_index.z incumbent/replay_index.z \
     && ln -s ../optimizer_inputs incumbent/optimizer_inputs

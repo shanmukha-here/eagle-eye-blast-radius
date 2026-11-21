@@ -20,6 +20,7 @@ from miniatures import CORE, Miniatures
 from memo_witness import bypass_only
 from startup import Startup
 from narrow import Narrow
+from parser_signal import unexecuted_return
 from long_gate import LongGate
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details, bindings
@@ -192,6 +193,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     narrow = Narrow(impact, map_path.parent)
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
+    parser_bit = impact.details.miniatures.tests.get("parser", 0)
+    parser_id = next((number for number, bit in scheduler.bits.items() if bit and bit == parser_bit), None)
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
     for path in patches:
         before = mask = impact.full
@@ -219,6 +222,10 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     plan = gate.apply(text, scheduler.intersect(before, mask, keep), workspace,
                                       legacy.last_seconds, legacy.last_mismatch,
                                       lambda: replay_body(impact, text), legacy.graph_changed)
+                    if parser_id is not None and any(parser_id in group for group in plan):
+                        if unexecuted_return(impact, text, parser_bit):
+                            retained = {n for group in plan for n in group if n != parser_id}
+                            plan = scheduler.repack(retained, plan)
         except UnicodeError:
             plan = scheduler.intersect(impact.full, impact.full)
         workers = json.dumps(plan, separators=(",", ":"))
