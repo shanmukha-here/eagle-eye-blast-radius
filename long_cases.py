@@ -9,6 +9,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import pickle
+import re
 import signal
 from struct import Struct
 import sys
@@ -359,6 +360,30 @@ class LongCases:
         before = syntax(path, source)[0]
         after = syntax(path, patched(source, hunks))[0]
         return imports(before) == imports(after)
+
+    def sole_source(self, text, test):
+        """Find a verified source section that is the test's only observed edit."""
+        if self.index is None or not self.index.mask("module_coverage"):
+            return None
+        edits = split_diff(text)
+        if not 1 <= len(edits) <= 4:
+            return None
+        candidates = []
+        for path, hunks in edits.items():
+            if path.startswith("tests/fixtures/"):
+                if self.impact.files.get(path, {}).get(0) is None:
+                    return None
+            elif not self.verified_source(path, hunks):
+                return None
+            if test in self.recovery_scope(text, {test}, edits={path: hunks}):
+                candidates.append(path)
+        if len(candidates) != 1 or not candidates[0].startswith("sqlglot/"):
+            return None
+        path, = candidates
+        for section in re.split(r"(?=^diff --git )", text, flags=re.MULTILINE)[1:]:
+            if section.startswith(f"diff --git a/{path} "):
+                return path, section
+        return None
 
     def ordinary_scope(self, text, active):
         """Combine independent cases with full test line and import evidence."""

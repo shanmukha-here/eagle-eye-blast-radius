@@ -243,6 +243,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     queries = QueryGate(map_path.parent, impact, scheduler, tests)
+    queries.recovery_cpu = min(20.0, len(patches) * 0.32)
     long_cases = LongCases(map_path.parent, impact, scheduler, tests, len(patches))
     short_bits = 0
     for number, bit in scheduler.bits.items():
@@ -298,6 +299,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 skipped.update(body_skips)
             selected = (extra if replace else selected | extra) - skipped
             plan = scheduler.repack(selected, plan)
+            if queries.test in selected:
+                with PatchWorkspace(base.resolve(), text) as workspace:
+                    plan = queries.recovery(text, plan, long_cases, workspace, deadline)
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace
         elif text and plan:

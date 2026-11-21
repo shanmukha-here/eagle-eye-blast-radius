@@ -7,6 +7,7 @@ import sys
 import time
 
 from impact import UnknownChange, patched, split_diff, syntax
+from cpu_budget import seconds
 from observation_file import ObservationFile
 from optimizer_probe import local_edit, verify_queries
 from refine import bindings, regions
@@ -46,6 +47,7 @@ class QueryGate:
         self.test = next((row["number"] for row in tests
                           if row["id"].endswith("::TestExecutor::test_execute_tpcds")), None)
         self.context = multiprocessing.get_context("fork")
+        self.recovery_cpu = 0.0
         self.stats = {}
 
     def checks(self, text, observed=None):
@@ -108,7 +110,7 @@ class QueryGate:
         checks.sort(key=lambda check: check[-1])
         return checks, not (optimize or unresolved) and path.startswith("sqlglot/executor/")
 
-    def apply(self, text, workers, workspace, cpu_limit, observed=None):
+    def apply(self, text, workers, workspace, cpu_limit, observed=None, projected=None):
         chosen = {n for group in workers for n in group}
         if self.index is None or self.test not in chosen or "sqlglot" in sys.modules:
             return workers
@@ -118,7 +120,7 @@ class QueryGate:
         if cap < 0.35:
             return workers
         try:
-            attempt = self.checks(text, observed)
+            attempt = projected if projected is not None else self.checks(text, observed)
             if attempt is None:
                 return workers
             checks, executor_only = attempt
@@ -155,3 +157,33 @@ class QueryGate:
         except (EOFError, OSError, UnknownChange, SyntaxError, ValueError, RecursionError):
             pass
         return workers
+
+    def recovery(self, text, workers, long_cases, workspace, deadline):
+        """Check late TPC-DS candidates against the complete patched tree."""
+        if (self.index is None or self.recovery_cpu < 0.65 or
+                not any(self.test in group for group in workers)):
+            return workers
+        started = seconds()
+
+        def available(requested):
+            return max(0, min(requested, self.recovery_cpu - (seconds() - started),
+                              (deadline - time.monotonic() - 0.20) / 1.60))
+
+        try:
+            source = long_cases.sole_source(text, self.test)
+            if source is None:
+                return workers
+            _, section = source
+            proof = self.checks(section)
+            if proof is None or not proof[0]:
+                return workers
+            new = self.apply(section, workers, workspace, available, projected=proof)
+            if new is not workers:
+                self.stats["recovery_tpcds_cleared"] = True
+            return new
+        except (OSError, SyntaxError, UnicodeError, UnknownChange, ValueError, RecursionError):
+            return workers
+        finally:
+            used = seconds() - started
+            self.recovery_cpu -= used
+            self.stats["recovery_query_cpu"] = round(used, 6)
