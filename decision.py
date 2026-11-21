@@ -2,6 +2,7 @@
 import contextlib
 import multiprocessing
 import os
+import re
 import signal
 import sys
 import tempfile
@@ -102,8 +103,41 @@ def worker(conn, root, inexpensive, checks, paths):
         conn.close()
 
 
+def change_coverage(patch, lines):
+    """Use removed lines on the pin and both neighbors of pure insertions."""
+    cover = 0
+    sensitive = False
+    rows = {}
+    old = None
+    removed = False
+    for text in patch.splitlines():
+        if text.startswith("diff --git "):
+            rows = lines.get(text.split()[2][2:], {})
+            old = None
+        elif text.startswith("@@ "):
+            start = text.split()[1].split(",")[0]
+            old = -int(start)
+            removed = False
+        elif old is not None:
+            if text.startswith(" "):
+                old += 1
+                removed = False
+            elif text.startswith("-"):
+                cover |= rows.get(old, 0)
+                old += 1
+                removed = True
+            elif text.startswith("+") and not removed:
+                cover |= rows.get(old - 1, 0) | rows.get(old, 0)
+            if text.startswith(("+", "-")) and re.search(
+                r"max_nodes|_node_count|recurs|\blen\s*\(|\b[0-9][0-9_]{3,}\b", text
+            ):
+                sensitive = True
+    return cover, sensitive
+
+
 class Execution:
-    def __init__(self, scheduler, names, base, count):
+    def __init__(self, scheduler, names, base, count, lines):
+        self.lines = lines
         self.scheduler = scheduler
         self.base = base.resolve()
         self.names = {n:i for i,n in enumerate(names)}
@@ -113,6 +147,12 @@ class Execution:
         self.budget = min(45.0, count * 0.72)
         self.deadline = time.monotonic() + min(150.0, 2.4 * count + 3.0)
         self.ctx = multiprocessing.get_context("fork")
+        # Both numerical libraries start single-threaded in the pinned image.
+        # Their imports are shared; SQLGlot and test modules load only in a child.
+        import pandas.testing
+        import duckdb
+        if "sqlglot" in sys.modules or len(os.listdir("/proc/self/task")) != 1:
+            self.budget = 0.0
 
     def refine(self, patch, mask):
         if not mask or self.budget < 0.3 or time.monotonic() >= self.deadline:
@@ -125,13 +165,15 @@ class Execution:
             return mask
         original = [n for n in self.order if mask & (1 << self.names[n])]
         cheap = [n for n in original if self.durations[n] < 3000]
+        cover, sensitive = change_coverage(patch, self.lines)
+        covered = [n for n in cheap if cover & (1 << self.names[n])]
         total = sum(self.durations[n] for n in cheap)
         if total <= 550 and len(cheap) <= 40:
-            inexpensive = cheap
+            inexpensive = covered
         else:
             # Favor the tests which can reduce the critical worker load. Expensive
             # integrations often exceed the decision-time budget just in setup.
-            inexpensive = [n for n in cheap if 15 <= self.durations[n] <= 230
+            inexpensive = [n for n in covered if 15 <= self.durations[n] <= 230
                            and n.count("::") == 2 and "test_executor.py" not in n][:3]
         checks = []
         if len(edits) == 1:
@@ -140,7 +182,7 @@ class Execution:
             for name in original:
                 if name.endswith("::test_generator_memory") and path.startswith("sqlglot/generators/"):
                     checks.append(("memory", name))
-                elif (name.endswith("::test_max_nodes") and single and path not in CORE
+                elif (name.endswith("::test_max_nodes") and single and path not in CORE and not sensitive
                       and not path.endswith("/__init__.py") and not path.startswith("sqlglot/executor/")
                       and path != "sqlglot/dialects/dialect.py"):
                     checks.append(("parser", name))
@@ -148,6 +190,10 @@ class Execution:
                       (path in CORE or path.startswith(("sqlglot/parsers/", "sqlglot/optimizer/")))
                       and not path.endswith("/__init__.py")):
                     checks.append(("tpcds", name))
+        if checks and len(cheap) > 40 and inexpensive:
+            # A genuinely cheap covering witness leaves time for the long workload.
+            candidates = [n for n in reversed(covered) if n.count("::") == 2]
+            inexpensive = candidates[:2]
         if not inexpensive and not checks:
             return mask
         requested = inexpensive + [name for _, name in checks]
