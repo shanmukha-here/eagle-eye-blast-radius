@@ -92,7 +92,9 @@ def main(root, out):
             if is_test:
                 recorded |= observed.get(path, 0)
             for line in range(node.lineno, node.end_lineno + 1):
-                recorded |= pool[lines.get(str(line), 0)]
+                line_mask = lines.get(str(line))
+                if line_mask is not None:
+                    recorded |= pool[line_mask]
             members["attr:" + member] = recorded
         for imported in scanner.result - {path}:
             consumers[imported].add(path)

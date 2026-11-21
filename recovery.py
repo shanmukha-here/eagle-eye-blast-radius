@@ -7,9 +7,26 @@ from dependencies import name_bits
 from impact import UnknownChange, patched, split_diff, syntax
 from precision_index import PrecisionIndex
 from receiver_edits import classes, plain_method
+from risk_features import member_change
 
 
 FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def inert_definition(tree, method):
+    if plain_method(method):
+        return True
+    # The method slot is the only evaluated effect of an unwrapped definition
+    # when annotations are postponed and defaults hold only literal values.
+    if (not isinstance(method, ast.FunctionDef) or method.decorator_list
+            or method.type_params or method.name.startswith("_")):
+        return False
+    postponed = any(isinstance(node, ast.ImportFrom) and node.module == "__future__"
+                    and any(item.name == "annotations" for item in node.names)
+                    for node in tree.body)
+    args = method.args
+    return postponed and all(value is None or isinstance(value, ast.Constant)
+                             for value in args.defaults + args.kw_defaults)
 
 
 def declaration_atoms(tree, owner="", enum=False):
@@ -68,7 +85,7 @@ class Recovery:
                 if inert is not None:
                     return inert, True
             if edit not in current:
-                readers = self.removed_method(path, owner, member)
+                readers = self.removed_method(path, after, owner, member)
                 if readers is not None:
                     return readers, True
         details = self.impact.details
@@ -104,7 +121,7 @@ class Recovery:
             observed |= reads | reach or classes or broad
         return observed or broad, direct and bool(observed)
 
-    def removed_method(self, path, owner, name):
+    def removed_method(self, path, after, owner, name):
         """Combine qualified call, namespace and member-read observations."""
         if not owner or not self.imports.mask("!attr_references"):
             return None
@@ -113,9 +130,13 @@ class Recovery:
         if not self.receivers.bits("plain:" + tag):
             return None
         before = syntax(path, self.impact.base(path)[0])[0]
+        if member_change(before, after) != (owner, name):
+            return None
         cls = dict(classes(before.body)).get(owner)
-        if cls is None or not any(getattr(node, "name", None) == name and plain_method(node)
-                                  for node in cls.body):
+        if cls is None:
+            return None
+        method = next((node for node in cls.body if getattr(node, "name", None) == name), None)
+        if method is None or not inert_definition(before, method):
             return None
         details = self.impact.details
         return (self.imports.mask(f"call:{path}:{owner}.{name}") |
