@@ -34,3 +34,6 @@ tools/*
 !query_sentinel.py
 !narrow.py
 !fixture_reads.json
+!incumbent/
+!incumbent/*.py
+!incumbent/observers.z

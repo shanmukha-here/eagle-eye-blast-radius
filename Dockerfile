@@ -20,4 +20,7 @@ COPY requirements.lock /app/requirements.lock
 RUN python -m pip install --disable-pip-version-check --no-cache-dir --no-deps --index-url https://pypi.org/simple --only-binary=:all: -r /app/requirements.lock
 ENV SKIP_INTEGRATION=0 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHON_CPU_COUNT=2
 COPY decision.py selector.py narrow.py fixture_reads.json ./
+COPY incumbent/ ./incumbent/
+RUN ln -s ../replay_index.z incumbent/replay_index.z \
+    && ln -s ../optimizer_inputs incumbent/optimizer_inputs
 CMD ["python", "/app/selector.py"]
