@@ -176,13 +176,11 @@ class Impact:
             compile(source, path, "exec", dont_inherit=True),
         )
 
-    def check_startup(self, mask, path, modified):
+    def check_startup(self, mask):
+        # An import edit can affect interpreter-wide timing. The scaled parser
+        # assertions do not certify that the full stress run finishes in time.
         miniature = getattr(self.details, "miniatures", None)
-        if miniature:
-            stress = miniature.tests.get("parser", 0)
-            if stress and not mask & stress:
-                return miniature.check(mask | stress, self.scheduler, "parser", path, modified)
-        return mask
+        return mask | miniature.tests.get("parser", 0) if miniature else mask
 
     def file_mask(self, path, hunks, single=False, fixture_mix=False):
         rows = self.files.get(path, {})
@@ -225,9 +223,15 @@ class Impact:
         startup = getattr(self.details, "startup", None) if single else None
         if skeleton != updated or scopes.keys() != new_scopes.keys():
             if startup:
-                mask = startup.registry(path, source, modified, self.details.access)
-                if mask is not None and self.details.import_valid(path, modified):
-                    return self.check_startup(mask | rows.get(0, 0) | flow.opaque, path, modified)
+                registration = startup.registry(path, source, modified, self.details.access)
+                if registration is not None and self.details.import_valid(path, modified):
+                    mask, default_key_only = registration
+                    selected = self.check_startup(mask | rows.get(0, 0) | flow.opaque)
+                    if default_key_only:
+                        # get_or_raise(None) constructs the base class directly.
+                        # Only its registry key changed. Verify the default parses cold.
+                        return self.details.miniatures.check(selected, self.scheduler, "parser", path, modified)
+                    return selected
             if flow and single and flow.equality(path, ast.parse(source), ast.parse(modified)):
                 return rows.get(0, 0) | flow.opaque
             if self.details and single:
@@ -241,7 +245,7 @@ class Impact:
             key = affected[0]
             mask = startup.lazy(path, key, scopes[key][3], new_scopes[key][3])
             if mask is not None:
-                return self.check_startup(mask | readers | flow.opaque, path, modified)
+                return self.check_startup(mask | readers | flow.opaque)
         if not affected:
             # Non-semantic edits can still move line information or affect source readers.
             fallback = readers | self.visitors.get(path, self.full)
@@ -284,7 +288,7 @@ class Impact:
                 and replay and not readers & replay.test):
             key = affected[0]
             selected = replay.select(path, modified, key, scopes[key], new_scopes[key], selected,
-                                     getattr(self, "scheduler", None))
+                                     getattr(self, "scheduler", None), bool(refine))
         miniature = getattr(self.details, "miniatures", None)
         if miniature and single and len(affected) == 1:
             key = affected[0]

@@ -28,3 +28,4 @@ tools/*
 !memory_index.z
 !tools/build_tpch_sql.py
 !stress.z
+!query_lines.z

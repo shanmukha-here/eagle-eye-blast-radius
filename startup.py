@@ -126,5 +126,6 @@ class Startup:
             for key, bits in access.seen.items():
                 if key.startswith("field:") and key.endswith(":" + field):
                     readers |= bits
-        return (readers | self.bits.get("registry:all", 0) | self.bits.get("registry:member:" + member, 0)
+        mask = (readers | self.bits.get("registry:all", 0) | self.bits.get("registry:member:" + member, 0)
                 | self.bits.get("registry:key:" + old, 0) | self.bits.get("registry:key:" + new, 0))
+        return mask, member == "DIALECT" and old == "" and not fields
