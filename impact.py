@@ -5,6 +5,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+from dependencies import appended_failure, simple_collection
 from refine import bindings
 
 HEADER = re.compile(r"diff --git a/([A-Za-z0-9_./-]+) b/([A-Za-z0-9_./-]+)")
@@ -14,6 +15,32 @@ FUNCTION = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 class UnknownChange(Exception):
     pass
+
+
+def new_source(patch):
+    """Accept a single ordinary Git file addition from /dev/null."""
+    lines = patch.splitlines()
+    if not lines or len(lines) > 25000:
+        return None
+    header = HEADER.fullmatch(lines[0])
+    if not header or header[1] != header[2]:
+        return None
+    path = header[1]
+    if not re.fullmatch(r"sqlglot/[a-z][a-z0-9_]*\.py", path):
+        return None
+    i = 1
+    if i < len(lines) and lines[i] in ("new file mode 100644", "new file mode 100755"):
+        i += 1
+    if i < len(lines) and lines[i].startswith("index "):
+        i += 1
+    if lines[i:i+2] != ["--- /dev/null", "+++ b/" + path] or i+2 >= len(lines):
+        return None
+    hunk = HUNK.fullmatch(lines[i+2])
+    added = lines[i+3:]
+    if (not hunk or (hunk[1], hunk[2]) != ("0", "0") or hunk[3] != "1"
+            or int(hunk[4] or 1) != len(added) or not all(line.startswith("+") for line in added)):
+        return None
+    return path, "\n".join(line[1:] for line in added) + "\n"
 
 
 def split_diff(text):
@@ -160,7 +187,21 @@ class Impact:
         ):
             source, original, _ = self.base(path)
             modified = patched(source, hunks)
-            compile(modified, path, "exec", dont_inherit=True)
+            grouped = (
+                self.details.imports.get(path, self.full)
+                | self.details.test_files.get(path, self.full)
+                | rows.get(0, 0)
+            )
+            numbered_module = (
+                single and path in self.details.test_files
+                and Path(path).name.startswith("test_")
+            )
+            try:
+                compile(modified, path, "exec", dont_inherit=True)
+            except SyntaxError:
+                return grouped if numbered_module and simple_collection(source) else self.full
+            if numbered_module and appended_failure(source, modified):
+                return grouped
             return self.details.test_body(
                 path, original, structure(ast.parse(modified))
             )
@@ -213,6 +254,10 @@ class Impact:
     def select(self, patch):
         try:
             selection = 0
+            if self.details and self.details.access and "--- /dev/null" in patch:
+                addition = new_source(patch)
+                if addition is not None:
+                    return self.details.access.addition(self.root, *addition, self.full)
             edits = split_diff(patch)
             for path, hunks in edits.items():
                 selection |= self.file_mask(path, hunks, single=len(edits) == 1)

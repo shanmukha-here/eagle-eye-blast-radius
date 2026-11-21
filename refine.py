@@ -123,7 +123,8 @@ def changed_fields(old_source, new_source):
 
 
 class Details:
-    def __init__(self, data, ids, root):
+    def __init__(self, data, ids, root, access=None):
+        self.access = access
         pool = [int(v, 16) for v in data["bits"]]
         self.lines = {
             p: {int(k): pool[i] for k, i in rows.items()}
@@ -279,9 +280,9 @@ class Details:
                     return self.full
                 selected |= self.types[identifier] | self.references[identifier]
             elif path in self.dialects and field.isupper():
-                selected |= (
-                    self.dialects[path] | visitors | self.references.get(identifier, 0)
-                )
+                wide = self.dialects[path] | visitors | self.references.get(identifier, 0)
+                seen = self.access.scalar_users(path, owner, field, source) if self.access else None
+                selected |= wide if seen is None or seen == self.full else seen
             else:
                 return self.full
         if selected == self.full or not self.import_valid(path, modified):

@@ -7,6 +7,7 @@ import zlib
 from functools import lru_cache
 from pathlib import Path
 
+from dependencies import Dependencies
 from impact import Impact
 from refine import Details
 
@@ -60,7 +61,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     tests = json.loads((data / "tests.json").read_bytes())["tests"]
     profile = json.loads(zlib.decompress(map_path.read_bytes()))
     data_map = json.loads(zlib.decompress(map_path.with_name("details.z").read_bytes()))
-    impact = Impact(base, profile, Details(data_map, profile["ids"], base))
+    access = Dependencies(json.loads(zlib.decompress(map_path.with_name("access.z").read_bytes())))
+    impact = Impact(base, profile, Details(data_map, profile["ids"], base, access))
     scheduler = Scheduler(tests, profile["ids"])
     deadline = time.monotonic() + 145
     for path in sorted((data / "commits").glob("*.patch")):

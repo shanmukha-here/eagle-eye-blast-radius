@@ -10,5 +10,5 @@ COPY --from=source /src/sqlglot /base/sqlglot
 COPY --from=source /src/tests /base/tests
 RUN python -m compileall -q /base/sqlglot
 WORKDIR /app
-COPY selector.py impact.py refine.py import_check.py base.z details.z ./
+COPY selector.py impact.py refine.py import_check.py dependencies.py base.z details.z access.z ./
 CMD ["python", "/app/selector.py"]
