@@ -114,6 +114,35 @@ class Surface:
         except (UnknownChange, OSError, UnicodeError, ValueError, SyntaxError, RecursionError):
             return None
 
+    def line_endings(self, text):
+        """Resolve verified CRLF hunks on pinned Python or tracked SQL fixtures."""
+        if self.index is None or "\r" not in text or "\r" in text.replace("\r\n", "\n"):
+            return None
+        try:
+            edits = split_diff(text, physical=True)
+            path, = edits
+            source = (self.impact.root / path).read_bytes()
+            modified = patched(source.decode("utf-8"), edits[path], physical=True).encode("utf-8")
+            if source == modified:
+                return None
+            details = self.impact.details
+            readers = self.impact.files.get(path, {}).get(0)
+            file_effects = (readers or 0) | (self.mask("file:" + path) or 0) | self.references.get(path, 0)
+            opaque = details.flow.opaque
+            if path.startswith("tests/fixtures/") and path.endswith(".sql") and readers:
+                return file_effects | opaque
+            if not path.startswith("sqlglot/") or not path.endswith(".py") or path.endswith("/__init__.py"):
+                return None
+            if path not in details.lines:
+                return None
+            before, after = (compile(content, path, "exec", flags=ast.PyCF_ONLY_AST, dont_inherit=True)
+                             for content in (source, modified))
+            if ast.dump(before) == ast.dump(after):
+                return file_effects | opaque | details.positions | self.introspection
+        except (UnknownChange, OSError, UnicodeError, ValueError, SyntaxError, RecursionError, LookupError):
+            pass
+        return None
+
     def definition(self, path, hunks, raw):
         if not path.startswith("sqlglot/") or not path.endswith(".py"):
             return None

@@ -45,9 +45,14 @@ def new_source(patch):
 
 
 @lru_cache(maxsize=16)
-def split_diff(text):
+def split_diff(text, *, physical=False):
     """Accept same-path textual unified diffs. Anything else uses all tests."""
-    lines = text.splitlines()
+    if physical:
+        if not text.endswith("\n"):
+            raise UnknownChange
+        lines = text[:-1].split("\n")
+    else:
+        lines = text.splitlines()
     if not lines or len(lines) > 25000:
         raise UnknownChange
     files = {}
@@ -102,13 +107,19 @@ def split_diff(text):
     return files
 
 
-def patched(source, hunks):
-    return apply_hunks(source, tuple((i, j, tuple(old), tuple(new)) for i, j, old, new in hunks))
+def patched(source, hunks, *, physical=False):
+    edits = tuple((i, j, tuple(old), tuple(new)) for i, j, old, new in hunks)
+    return apply_hunks(source, edits, physical)
 
 
 @lru_cache(maxsize=16)
-def apply_hunks(source, hunks):
-    original = tuple(source.splitlines())
+def apply_hunks(source, hunks, physical=False):
+    if physical:
+        if not source.endswith("\n"):
+            raise UnknownChange
+        original = tuple(source[:-1].split("\n"))
+    else:
+        original = tuple(source.splitlines())
     result = []
     offset = 0
     for start, new_start, old, new in hunks:

@@ -352,8 +352,16 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 plan = fallback_plan
             else:
                 text = path.read_bytes().decode("utf-8")
-                if hard_topology(text) or opaque_format(text):
+                if hard_topology(text):
                     emit(path, fallback_plan, beginning)
+                    continue
+                if opaque_format(text):
+                    tracked = surface.line_endings(text)
+                    if tracked is not None:
+                        precision.stats["verified_line_endings"] = True
+                        emit(path, scheduler.plan(tracked), beginning, verified=True)
+                    else:
+                        emit(path, fallback_plan, beginning)
                     continue
                 if "NUMERIC_ESCAPES" in text:
                     observed = precision.registry(text)
