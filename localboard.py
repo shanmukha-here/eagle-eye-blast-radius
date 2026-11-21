@@ -166,28 +166,30 @@ def evaluate(config, confdir, archive, work, sha):
         allowed = sorted(set(allowed).intersection(config["cpu_ids"]))
     if len(allowed) < 4:
         raise ValueError("four build CPUs are required")
-    with archive.open("rb") as source:
-        run(
-            "docker",
-            "build",
-            "--platform",
-            "linux/amd64",
-            "--cpuset-cpus",
-            ",".join(map(str, allowed[:4])),
-            "--memory",
-            "8g",
-            "--memory-swap",
-            "8g",
-            "--iidfile",
-            str(iidfile),
-            "-t",
-            image,
-            "-",
-            stdin=source,
-            stdout=sys.stderr,
-            env=dict(os.environ, DOCKER_BUILDKIT="0"),
-            timeout=600,
-        )
+    context = work / "build-context"
+    context.mkdir()
+    with tarfile.open(archive) as source:
+        source.extractall(context, filter="data")
+    run(
+        "docker",
+        "build",
+        "--platform",
+        "linux/amd64",
+        "--cpuset-cpus",
+        ",".join(map(str, allowed[:4])),
+        "--memory",
+        "8g",
+        "--memory-swap",
+        "8g",
+        "--iidfile",
+        str(iidfile),
+        "-t",
+        image,
+        str(context),
+        stdout=sys.stderr,
+        env=dict(os.environ, DOCKER_BUILDKIT="0"),
+        timeout=600,
+    )
     iid = iidfile.read_text().strip()
     prefix = "blastboard" + secrets.token_hex(8)
     parent = prefix + ".slice"

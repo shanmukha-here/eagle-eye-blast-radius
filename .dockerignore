@@ -32,3 +32,5 @@ tools/*
 !requirements.lock
 !decision.py
 !query_sentinel.py
+!narrow.py
+!fixture_reads.json
