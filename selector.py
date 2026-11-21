@@ -304,10 +304,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 skipped.update(body_skips)
             selected = (extra if replace else selected | extra) - skipped
             plan = scheduler.repack(selected, plan)
-            if queries.test in selected:
+            if selected & long_cases.tests.keys():
                 with PatchWorkspace(base.resolve(), text) as workspace:
                     plan = renders.apply(text, plan, workspace, deadline)
                     plan = queries.recovery(text, plan, long_cases, workspace, deadline, renders.index)
+                    plan = long_cases.recovery_replay(text, plan, workspace, deadline)
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace
         elif text and plan:

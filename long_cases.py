@@ -301,7 +301,7 @@ class LongCases:
                 or self.tests[test] in fixtures
                 or any(self.index.mask(f"{self.tests[test]}:{path}") for path in sources)}
 
-    def apply(self, text, workers, workspace, cpu_limit, declaration=False, only=None):
+    def apply(self, text, workers, workspace, cpu_limit, declaration=False, only=None, projected=None):
         if self.index is None or "sqlglot" in sys.modules:
             return workers
         chosen = {n for worker in workers for n in worker}
@@ -310,7 +310,7 @@ class LongCases:
             active &= only
         if not active:
             return workers
-        masks = self.changes(text, declaration)
+        masks = self.changes(text, declaration) if projected is None else projected
         if masks is None:
             return workers
         jobs = []
@@ -415,9 +415,14 @@ class LongCases:
         except (OSError, SyntaxError, UnicodeError, ValueError, UnknownChange, RecursionError):
             return active
 
-    def recovery_replay(self, text, workers, base, workspace_factory, active, deadline):
-        """Replay restored long tests with complete single-module evidence."""
-        if not active or self.recovery_cpu < 0.3:
+    def recovery_replay(self, text, workers, workspace, deadline):
+        """Replay positive body observations in the test's sole edited file."""
+        if self.index is None or self.recovery_cpu < 0.6:
+            return workers
+        selected = {n for group in workers for n in group}
+        active = selected & self.tests.keys()
+        active = {test for test in active if self.tests[test] != EXECUTE_DS}
+        if not active:
             return workers
         started = seconds()
 
@@ -426,26 +431,26 @@ class LongCases:
                               (deadline - time.monotonic() - 0.30) / 1.60))
 
         try:
-            edits = split_diff(text)
-            if len(edits) != 1:
-                return workers
-            path, hunks = next(iter(edits.items()))
-            if not path.startswith("sqlglot/") or not path.endswith(".py") or path.endswith("/__init__.py"):
-                return workers
-            source = self.impact.base(path)[0]
-            before = syntax(path, source)[0]
-            after = syntax(path, patched(source, hunks))[0]
-            if imports(before) != imports(after):
-                return workers
-            cases = self.changes(text, declaration=True)
-            if cases is None:
-                return workers
-            # A zero mask in a whole-module declaration trace is insufficient
-            # to cover import-time and inheritance effects.
-            active = {test for test in active if cases[self.tests[test]]}
-            if active:
-                with workspace_factory(base, text) as workspace:
-                    return self.apply(text, workers, workspace, allowance, declaration=True, only=active)
+            masks = [0] * len(METHODS)
+            witnessed = set()
+            for test in active:
+                without = self.scheduler.repack(selected - {test}, workers)
+                if self.scheduler.cost(workers) - self.scheduler.cost(without) < 800:
+                    continue
+                source = self.sole_source(text, test)
+                if source is None:
+                    continue
+                _, section = source
+                cases = self.changes(section)
+                method = self.tests[test]
+                if cases is not None and cases[method] and not any(mask & 1 for mask in cases):
+                    masks[method] = cases[method]
+                    witnessed.add(test)
+            if witnessed:
+                self.stats["recovery_long_witnesses"] = len(witnessed)
+                revised = self.apply(text, workers, workspace, allowance, only=witnessed, projected=masks)
+                self.stats["recovery_long_removed"] = len(selected) - sum(map(len, revised))
+                return revised
         except (OSError, SyntaxError, UnicodeError, ValueError, UnknownChange, RecursionError):
             pass
         finally:
