@@ -215,9 +215,6 @@ class Details:
     @functools.lru_cache(maxsize=96)
     def import_valid(self, path, modified):
         module = path[:-3].replace("/", ".")
-        cap = getattr(self, "cpu_limit", float)(1.5)
-        if cap < 0.12:
-            return False
         helper = Path(__file__).with_name("import_check.py")
         try:
             result = subprocess.run(
@@ -225,7 +222,7 @@ class Details:
                 input=modified.encode(),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=cap,
+                timeout=1.5,
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):

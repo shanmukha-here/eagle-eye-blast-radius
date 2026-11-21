@@ -206,7 +206,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     surface = Surface(impact, map_path.parent, observation.references)
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
     verify = ExactTests(scheduler, tests, base, len(patches), map_path.with_name("unit_ready.json"))
-    impact.details.cpu_limit = incumbent.details.cpu_limit = budget.import_cap
     for check in (impact.details.replay,
                   incumbent.details.replay, impact.details.miniatures,
                   execution, gate, references, verify):
