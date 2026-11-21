@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from module_topology import addition, hard_topology
+from module_topology import addition, hard_topology, opaque_format
 
 
 @pytest.mark.parametrize("module", ["sqlglot/dialects/snowflake.py", "sqlglot/generators/teradata.py"])
@@ -22,3 +22,10 @@ def test_module_rename_and_shadowing_are_topology_changes():
     assert addition(shadow)
     assert not hard_topology(shadow)
     assert not addition(rename)
+
+
+def test_unsupported_patch_encodings_are_conservative():
+    assert opaque_format("diff --git a/fixture b/fixture\nGIT binary patch\nliteral 8\n")
+    assert opaque_format("@@ -1 +1 @@\n-select 1\n+select 1\r\n")
+    assert opaque_format("+value\n" * 1001)
+    assert not opaque_format("@@ -1 +1 @@\n-select 1\n+select 2\n")

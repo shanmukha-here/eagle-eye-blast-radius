@@ -14,8 +14,7 @@ from incumbent.optimizer_probe import Replay as IncumbentReplay
 
 from cpu_budget import CpuBudget, seconds
 from dependencies import Dependencies
-from assertion_replay import AssertionReplay
-from module_topology import addition, hard_topology
+from module_topology import addition, hard_topology, opaque_format
 from decision import Execution, PatchWorkspace
 from flow import Flow
 from observed import Observers
@@ -30,6 +29,8 @@ from surface import Surface
 from parser_signal import unexecuted_return
 from reference_replay import ReferenceReplay
 from long_gate import LongGate
+from tpcds_replay import QueryGate
+from receiver_edits import ReceiverEdits
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details, bindings
 
@@ -205,17 +206,15 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     narrow = Narrow(impact, map_path.parent)
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
-    assertions = AssertionReplay(impact, scheduler, tests, map_path.with_name("assertions.index"), budget.cap)
+    queries = QueryGate(map_path.parent, impact, scheduler, tests)
+    receivers = ReceiverEdits(map_path.with_name("receiver.index"), impact)
     report = os.environ.get("BLAST_ASSERTION_REPORT") == "1"
 
     def emit(path, plan, beginning):
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
-                           busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
-                           **assertions.stats)
-            for key in ("candidate_units", "replayed_units", "dropped_tests"):
-                metrics.setdefault(key, 0)
+                           busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000)
             print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
@@ -233,14 +232,13 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     for index, path in enumerate(patches):
         budget.remaining_patches = len(patches) - index
         beginning = seconds() if report else 0
-        assertions.stats = {}
         before = mask = impact.full
         try:
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
                 plan = scheduler.intersect(before, mask)
             else:
-                text = path.read_text("utf-8")
-                if hard_topology(text):
+                text = path.read_bytes().decode("utf-8")
+                if hard_topology(text) or opaque_format(text):
                     emit(path, scheduler.intersect(before, mask), beginning)
                     continue
                 metadata = surface.select(text)
@@ -256,8 +254,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     if observed_plan is not None and (
                         kind in ("default", "attribute", "import", "metadata", "syntax") or scheduler.cost(observed_plan) <= 3000
                     ):
-                        plan = assertions.refine(text, observed_plan)
-                        plan = references.apply(text, plan)
+                        plan = references.apply(text, observed_plan)
                         plan = verify.refine(text, plan)
                         emit(path, plan, beginning)
                         continue
@@ -278,6 +275,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         )
                         before = incumbent.select(text)
                     plan = scheduler.intersect(before, mask, keep)
+                    if before == mask == impact.full:
+                        declaration = receivers.select(text)
+                        if declaration is not None:
+                            before = mask = declaration | keep
+                            plan = json.loads(scheduler.schedule(mask, pad=False))
                     # Padding that did not change the initial schedule cost is
                     # not an observation. Replaying those IDs can load unrelated
                     # class fixtures and make a cheap cohort expensive.
@@ -286,6 +288,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                               if not scheduler.bits[n] or scheduler.bits[n] & observed}
                     replay_plan = scheduler.repack(active, plan)
                     plan = references.apply(text, replay_plan)
+                    if not legacy.graph_changed:
+                        plan = queries.apply(text, plan, workspace, budget.cap)
                     plan = gate.apply(text, plan, workspace,
                                       legacy.last_seconds, legacy.last_mismatch,
                                       lambda: replay_body(impact, text), legacy.graph_changed)
@@ -293,7 +297,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         if unexecuted_return(impact, text, parser_bit):
                             retained = {n for group in plan for n in group if n != parser_id}
                             plan = scheduler.repack(retained, plan)
-                    plan = assertions.refine(text, plan, workspace)
                     plan = verify.refine(text, plan)
         except UnicodeError:
             plan = scheduler.intersect(impact.full, impact.full)

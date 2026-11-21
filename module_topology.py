@@ -2,6 +2,7 @@
 import re
 
 DIFF = re.compile(r"^diff --git a/(\S+) b/(\S+)$", re.MULTILINE)
+OPAQUE = re.compile(r"^(?:GIT binary patch|Binary files .* differ)$", re.MULTILINE)
 
 
 def hard_topology(patch):
@@ -16,3 +17,8 @@ def hard_topology(patch):
 
 def addition(patch):
     return bool(re.search(r"^(?:new file mode |--- /dev/null$)", patch, re.MULTILINE))
+
+
+def opaque_format(patch):
+    """Mixed line endings and large or binary patches bypass semantic proofs."""
+    return "\r" in patch or patch.count("\n") > 1000 or bool(OPAQUE.search(patch))

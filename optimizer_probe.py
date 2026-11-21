@@ -3,6 +3,7 @@
 import ast
 import copy
 import json
+from mmap import ACCESS_READ, mmap
 import os
 import pickle
 import subprocess
@@ -259,9 +260,13 @@ def verify(root):
     module = path[:-3].replace("/", ".")
     sys.meta_path.insert(0, PatchedModule(module, str(root / path), modified))
     sys.path.insert(0, str(root))
+    store = Path(__file__).resolve().parent / "optimizer_inputs"
+    return verify_queries(store, checks, execution_only, fuse) and module in sys.modules
+
+
+def verify_queries(store, checks, execution_only=False, fuse=False):
     from sqlglot.optimizer import optimize
 
-    store = Path(__file__).resolve().parent / "optimizer_inputs"
     if not checks:
         return False
     from sqlglot import find_tables
@@ -271,24 +276,31 @@ def verify(root):
     if fuse:
         fuse_projection_checks()
     tables = {}
+
+    def snapshot(name):
+        flat = store / (name + ".pkl")
+        if flat.exists():
+            with flat.open("rb") as stream:
+                return mmap(stream.fileno(), 0, access=ACCESS_READ)
+        return zlib.decompress((store / (name + ".z")).read_bytes())
+
     for key, reference, opt_reference, whole in checks:
         if execution_only:
             from sqlglot.executor.python import PythonExecutor
             from sqlglot.executor.table import ensure_tables
 
-            snapshot = zlib.decompress((store / ("optimized-" + key + ".z")).read_bytes())
-            plan, names = pickle.loads(snapshot)
+            plan, names = pickle.loads(snapshot("optimized-" + key))
             fresh = {}
             for name in names:
                 if name not in tables:
-                    tables[name] = zlib.decompress((store / ("table-" + name + ".z")).read_bytes())
+                    tables[name] = snapshot("table-" + name)
                 fresh[name] = pickle.loads(tables[name])
             result = PythonExecutor(tables=ensure_tables(fresh)).execute(plan)
             if table_digest(result) != reference:
                 return False
             continue
         # Only a successful build-time comparison against the real test creates this file.
-        raw = zlib.decompress((store / (key + ".z")).read_bytes())
+        raw = snapshot(key)
         args, kwargs, names = pickle.loads(raw)
         if not whole and opt_reference:
             result = optimize(*args, **kwargs)
@@ -300,11 +312,11 @@ def verify(root):
             return False
         for n in observed_names:
             if n not in tables:
-                tables[n] = pickle.loads(zlib.decompress((store / ("table-" + n + ".z")).read_bytes()))
+                tables[n] = pickle.loads(snapshot("table-" + n))
         table = execute(args[0], schema=TPCDS_SCHEMA, tables={n: tables[n] for n in observed_names})
         if table_digest(table) != reference:
             return False
-    return module in sys.modules
+    return True
 
 
 if __name__ == "__main__":

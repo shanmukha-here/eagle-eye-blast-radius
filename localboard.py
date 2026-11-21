@@ -16,6 +16,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import fcntl
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
@@ -131,6 +132,17 @@ def cpu_usage(path):
     return int(stats["usage_usec"])
 
 
+@contextlib.contextmanager
+def docker_run_lock(config):
+    path = config.get("docker_run_lock") or os.environ.get("BLAST_LOCALBOARD_RUN_LOCK")
+    if path is None:
+        yield
+    else:
+        with open(path, "rb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            yield
+
+
 def evaluate(config, confdir, archive, work, sha):
     kit = (confdir / config["kit"]).resolve()
     scorer_path = kit / "score.py"
@@ -228,8 +240,9 @@ def evaluate(config, confdir, archive, work, sha):
     print(f"Frozen commit {sha}, image {iid}", flush=True)
     # A paused sibling keeps the private slice alive after the contestant exits.
     with container(control, flags + ["--entrypoint", "sleep", iid, "infinity"]):
-        run("docker", "start", control, stdout=subprocess.DEVNULL)
-        run("docker", "pause", control, stdout=subprocess.DEVNULL)
+        with docker_run_lock(config):
+            run("docker", "start", control, stdout=subprocess.DEVNULL)
+            run("docker", "pause", control, stdout=subprocess.DEVNULL)
         stat = Path("/sys/fs/cgroup") / parent / "cpu.stat"
         for label, (directory, answers, tests) in boards.items():
             trial_totals = []
@@ -241,7 +254,7 @@ def evaluate(config, confdir, archive, work, sha):
                     "-v",
                     f"{directory}/tests.json:/data/tests.json:ro",
                 ]
-                with container(name, flags + mounts + [iid]):
+                with docker_run_lock(config), container(name, flags + mounts + [iid]):
                     start = cpu_usage(stat)
                     t = time.monotonic()
                     stdout = limited_output(name, 180, 2_000_000)
@@ -320,7 +333,7 @@ def relay(config, archive, work, sha, calibration):
         + shlex.quote(config["remote_dir"])
         + "; d=$(mktemp -d .board.XXXXXXXX); "
         'trap \'rm -rf -- "$d"\' EXIT; tar -xf - -C "$d"; '
-        'flock -s /home/szv0080/lab_quiet.lock python3 "$d/localboard.py" '
+        'BLAST_LOCALBOARD_RUN_LOCK=/home/szv0080/lab_quiet.lock python3 "$d/localboard.py" '
         '--archive "$d/revision.tar.gz" --sha '
         + shlex.quote(sha)
         + ' --config localboard.json --calibration "$d/calibration.md"'
