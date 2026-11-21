@@ -21,7 +21,7 @@ LONG_TESTS = {
 }
 
 
-def probe(connection, root, targets, edits, first):
+def probe(connection, root, targets, edits, first, reuse_file):
     os.setsid()
     with open(os.devnull, "w") as sink:
         os.dup2(sink.fileno(), 1)
@@ -37,7 +37,7 @@ def probe(connection, root, targets, edits, first):
             if kind == "memory":
                 passed = memory(affected_dialects(edits))
             elif kind == "tpcds":
-                passed = check(first)
+                passed = check(first, reuse_file)
             else:
                 passed = (execute if kind == "execute" else optimized)()
             if passed:
@@ -72,7 +72,7 @@ class LongGate:
                        or path == "sqlglot/generator.py" for path in edits)
         return not any(path.startswith("sqlglot/executor/") or path == "sqlglot/serde.py" for path in edits)
 
-    def apply(self, text, workers, workspace=None, earlier=0.0, first=None):
+    def apply(self, text, workers, workspace=None, earlier=0.0, first=None, reuse=None):
         if self.available < 0.25:
             return workers
         run = {n for group in workers for n in group}
@@ -103,6 +103,7 @@ class LongGate:
         minimum = 1.35 if targets[0][1] == "tpcds" else 0.25
         if cap < minimum:
             return workers
+        reuse_file = reuse() if reuse is not None and targets[0][1] == "tpcds" else None
         started = time.monotonic()
         try:
             with contextlib.nullcontext(workspace) if workspace else PatchWorkspace(self.base, text) as overlay_tree:
@@ -111,7 +112,7 @@ class LongGate:
                     recv, send = self.ctx.Pipe(duplex=False)
                     stack.enter_context(recv)
                     stack.enter_context(send)
-                    child = self.ctx.Process(target=probe, args=(send, root, targets, list(edits), first))
+                    child = self.ctx.Process(target=probe, args=(send, root, targets, list(edits), first, reuse_file))
                     child.start()
                     send.close()
                     try:

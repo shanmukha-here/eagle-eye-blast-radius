@@ -15,13 +15,13 @@ from dependencies import Dependencies
 from decision import Execution, PatchWorkspace
 from flow import Flow
 from observed import Observers
-from optimizer_probe import Replay
+from optimizer_probe import Replay, local_edit
 from miniatures import CORE, Miniatures
 from startup import Startup
 from narrow import Narrow
 from long_gate import LongGate
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
-from refine import Details
+from refine import Details, bindings
 
 
 class Scheduler:
@@ -130,6 +130,28 @@ def needs_parser_guard(impact, text):
     return False
 
 
+
+def replay_body(impact, text):
+    """Identify optimizer code that cannot execute at the fixture parse boundary."""
+    if not text.startswith(("diff --git a/sqlglot/optimizer/", "diff --git a/sqlglot/schema.py ")):
+        return None
+    try:
+        edits = split_diff(text)
+        if len(edits) != 1:
+            return None
+        path, hunks = next(iter(edits.items()))
+        source, (outer, old), code = impact.base(path)
+        _, (new_outer, revised), compiled = syntax(path, patched(source, hunks))
+        if outer != new_outer or old.keys() != revised.keys() or bindings(code) != bindings(compiled):
+            return None
+        changed = [(old[k][3], revised[k][3]) for k in old if old[k][2] != revised[k][2]]
+        if len(changed) == 1 and local_edit(*changed[0]):
+            return path
+    except (UnknownChange, OSError, SyntaxError, UnicodeError, ValueError, RecursionError, KeyError):
+        return None
+    return None
+
+
 def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_name("base.z")):
     tests = json.loads((data / "tests.json").read_bytes())["tests"]
     profile = json.loads(zlib.decompress(map_path.read_bytes()))
@@ -187,7 +209,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         )
                         before = incumbent.select(text)
                     plan = gate.apply(text, scheduler.intersect(before, mask, keep), workspace,
-                                      legacy.last_seconds, legacy.last_mismatch)
+                                      legacy.last_seconds, legacy.last_mismatch,
+                                      lambda: replay_body(impact, text))
         except UnicodeError:
             plan = scheduler.intersect(impact.full, impact.full)
         workers = json.dumps(plan, separators=(",", ":"))
