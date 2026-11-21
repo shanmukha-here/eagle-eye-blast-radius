@@ -40,6 +40,7 @@ class QueryGate:
         self.test = next((row["number"] for row in tests
                           if row["id"].endswith("::TestExecutor::test_execute_tpcds")), None)
         self.context = multiprocessing.get_context("fork")
+        self.stats = {}
 
     def checks(self, text):
         edits = split_diff(text)
@@ -101,7 +102,9 @@ class QueryGate:
             if attempt is None:
                 return workers
             checks, executor_only = attempt
+            self.stats["tpcds_queries"] = len(checks)
             if not checks:
+                self.stats["tpcds_cleared"] = True
                 return reduced
             root = workspace.root()
             started = time.monotonic()
@@ -115,6 +118,7 @@ class QueryGate:
                 send.close()
                 try:
                     if recv.poll(max(0.0, 1.6 * cap - (time.monotonic() - started))) and recv.recv() is True:
+                        self.stats["tpcds_cleared"] = True
                         return reduced
                 finally:
                     child.join(0.02)

@@ -214,7 +214,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
-                           busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000)
+                           busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
+                           **queries.stats)
             print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
@@ -232,6 +233,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     for index, path in enumerate(patches):
         budget.remaining_patches = len(patches) - index
         beginning = seconds() if report else 0
+        queries.stats = {}
         before = mask = impact.full
         try:
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
@@ -280,6 +282,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         if declaration is not None:
                             before = mask = declaration | keep
                             plan = json.loads(scheduler.schedule(mask, pad=False))
+                            queries.stats["receiver_declaration"] = True
                     # Padding that did not change the initial schedule cost is
                     # not an observation. Replaying those IDs can load unrelated
                     # class fixtures and make a cheap cohort expensive.
