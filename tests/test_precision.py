@@ -1,6 +1,6 @@
 import ast
 
-from precision_body import body_regions
+from precision_body import body_regions, local_bindings
 from precision_index import PrecisionIndex, build
 from registry_keys import one_entry
 
@@ -39,3 +39,16 @@ def test_dispatch_factory_only_builds_a_closure(tmp_path):
     source = source.replace("    return handler", "    activate(flag)\n    return handler")
     revised = source.replace("factory(True)", "factory(False)")
     assert one_entry(tmp_path, "sqlglot/example.py", source, revised) is None
+
+
+def test_local_bindings_excludes_global_shadowing_and_frame_reads():
+    def code(source):
+        return compile(source, "example.py", "exec")
+
+    plain = "def fn(value):\n    item = value + 1\n    return item\n"
+    assert local_bindings(code(plain), code(plain.replace("item", "result")))
+    a = "def fn():\n    print(item)\n    return item\n"
+    b = "def fn():\n    print(item)\n    item = 1\n    return item\n"
+    assert not local_bindings(code(a), code(b))
+    a = "def fn(value):\n    item = value\n    return locals()\n"
+    assert not local_bindings(code(a), code(a.replace("item", "result")))

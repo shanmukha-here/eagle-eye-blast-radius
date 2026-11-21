@@ -1,6 +1,7 @@
 """Project isolated function-body changes onto the original executed statements."""
 import ast
 from difflib import SequenceMatcher
+from types import CodeType
 
 from impact import UnknownChange, patched, split_diff, syntax
 from refine import bindings, dump
@@ -9,6 +10,23 @@ from refine import bindings, dump
 CONTROL = (ast.If, ast.While, ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)
 DEFINITIONS = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 OPAQUE = (ast.Yield, ast.YieldFrom, ast.Global, ast.Nonlocal, ast.Import, ast.ImportFrom)
+FRAME_READS = {"locals", "globals", "eval", "exec", "vars", "dir", "_getframe", "currentframe", "__code__"}
+
+
+def local_bindings(before, after):
+    if ((before.co_name, before.co_flags, before.co_cellvars, before.co_freevars) !=
+            (after.co_name, after.co_flags, after.co_cellvars, after.co_freevars)):
+        return False
+    if before.co_varnames != after.co_varnames:
+        # A new local can shadow a global before the first modified statement.
+        # Keep that shape and anything that can inspect the frame's names.
+        names = set(before.co_names) | set(after.co_names)
+        changed = set(before.co_varnames) ^ set(after.co_varnames)
+        if names & (changed | FRAME_READS):
+            return False
+    a = [c for c in before.co_consts if isinstance(c, CodeType)]
+    b = [c for c in after.co_consts if isinstance(c, CodeType)]
+    return len(a) == len(b) and all(local_bindings(x, y) for x, y in zip(a, b))
 
 
 def body_regions(before, after):
@@ -78,7 +96,8 @@ def footprint(impact, text):
             source, (outer, scopes), code = impact.base(path)
             other = patched(source, hunks)
             _, (skeleton, new_scopes), changed_code = syntax(path, other)
-            if outer != skeleton or scopes.keys() != new_scopes.keys() or bindings(code) != bindings(changed_code):
+            if (outer != skeleton or scopes.keys() != new_scopes.keys()
+                    or (bindings(code) != bindings(changed_code) and not local_bindings(code, changed_code))):
                 return None
             rows = []
             for site, before in scopes.items():
