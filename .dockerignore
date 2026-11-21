@@ -29,3 +29,6 @@ tools/*
 !tools/build_tpch_sql.py
 !stress.z
 !query_lines.z
+!requirements.lock
+!decision.py
+!query_sentinel.py

@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dependencies import Dependencies
+from decision import Execution
 from flow import Flow
 from observed import Observers
 from optimizer_probe import Replay
@@ -76,12 +77,15 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     impact.details.startup = Startup(map_path.parent)
     impact.details.miniatures = Miniatures(profile["ids"], base, map_path.parent)
     impact.scheduler = scheduler
-    deadline = time.monotonic() + 145
-    for path in sorted((data / "commits").glob("*.patch")):
+    patches = sorted((data / "commits").glob("*.patch"))
+    execution = Execution(scheduler, profile["ids"], base, len(patches))
+    deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
+    for path in patches:
         mask = impact.full
         if time.monotonic() < deadline and path.stat().st_size <= 1_000_000:
             try:
-                mask = impact.select(path.read_text("utf-8"))
+                text = path.read_text("utf-8")
+                mask = execution.refine(text, impact.select(text))
             except UnicodeError:
                 pass
         workers = scheduler.schedule(mask)

@@ -161,7 +161,11 @@ def evaluate(config, confdir, archive, work, sha):
         )
     image = "eagleeye-blast-localboard:" + sha
     iidfile = work / "image.id"
-    allowed = sorted(os.sched_getaffinity(0))[:4]
+    allowed = sorted(os.sched_getaffinity(0))
+    if "cpu_ids" in config:
+        allowed = sorted(set(allowed).intersection(config["cpu_ids"]))
+    if len(allowed) < 4:
+        raise ValueError("four build CPUs are required")
     with archive.open("rb") as source:
         run(
             "docker",
@@ -169,7 +173,7 @@ def evaluate(config, confdir, archive, work, sha):
             "--platform",
             "linux/amd64",
             "--cpuset-cpus",
-            ",".join(map(str, allowed)),
+            ",".join(map(str, allowed[:4])),
             "--memory",
             "8g",
             "--memory-swap",
@@ -188,6 +192,7 @@ def evaluate(config, confdir, archive, work, sha):
     prefix = "blastboard" + secrets.token_hex(8)
     parent = prefix + ".slice"
     flags = [
+        "--cpuset-cpus", ",".join(map(str, allowed)),
         "--cgroup-parent",
         parent,
         "--platform",

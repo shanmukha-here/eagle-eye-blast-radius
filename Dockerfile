@@ -11,9 +11,15 @@ COPY --from=source /src/sqlglot /base/sqlglot
 COPY --from=source /src/tests /base/tests
 RUN python -m compileall -q /base/sqlglot
 WORKDIR /app
-COPY selector.py impact.py refine.py import_check.py dependencies.py base.z details.z access.z flow.py reach.py observed.py observers.z flow.z checkpoint.py optimizer_probe.py replay_index.z query_lines.z parser_probe.py miniatures.py stress_guard.py short_probe.py startup.py startup.z stress.z memory_index.z ./
+COPY impact.py refine.py import_check.py dependencies.py base.z details.z access.z flow.py reach.py observed.py observers.z flow.z checkpoint.py optimizer_probe.py replay_index.z query_lines.z parser_probe.py miniatures.py stress_guard.py short_probe.py startup.py startup.z stress.z memory_index.z ./
 COPY tools/build_tpch_sql.py /build_tpch_sql.py
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python /build_tpch_sql.py /app/tpch_sql.json
 COPY tools/build_replays.py /build_replays.py
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python /build_replays.py /app/replay_index.z /app/optimizer_inputs
+COPY requirements.lock /app/requirements.lock
+RUN python -m pip install --disable-pip-version-check --no-cache-dir --no-deps --index-url https://pypi.org/simple --only-binary=:all: -r /app/requirements.lock
+ENV SKIP_INTEGRATION=0 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHON_CPU_COUNT=2
+COPY query_sentinel.py ./
+RUN PYTHONPATH=/app:/base PYTHONHASHSEED=0 python query_sentinel.py
+COPY decision.py selector.py ./
 CMD ["python", "/app/selector.py"]
