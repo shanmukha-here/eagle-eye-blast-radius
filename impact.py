@@ -127,6 +127,21 @@ def apply_hunks(source, hunks):
     return "\n".join(result) + "\n"
 
 
+def ast_shape(node):
+    """Represent parsed syntax for comparison without formatting source-sized strings."""
+    if isinstance(node, ast.Constant):
+        value = node.value
+        encoded = repr(value) if type(value) in (float, complex) else value
+        return ast.Constant, type(value), encoded, node.kind
+    if isinstance(node, ast.AST):
+        kind = type(node)
+        fields = kind._fields
+        return (kind, *(ast_shape(getattr(node, field, None)) for field in fields)) if fields else kind
+    if isinstance(node, list):
+        return tuple(map(ast_shape, node))
+    return node
+
+
 def structure(tree):
     """Separate function bodies from the definitions executed at import time."""
     functions = {}
@@ -152,7 +167,7 @@ def structure(tree):
                 first = min([node.lineno] + [d.lineno for d in node.decorator_list])
                 body = ast.Module(body=node.body, type_ignores=[])
                 node.body = [ast.Pass()]
-            functions[key] = (first, node.end_lineno, ast.dump(body), body)
+            functions[key] = (first, node.end_lineno, ast_shape(body), body)
             return
         child_path = (*path, node.name) if isinstance(node, ast.ClassDef) else path
         for child in ast.iter_child_nodes(node):
@@ -160,7 +175,7 @@ def structure(tree):
 
     try:
         visit(tree, ())
-        return ast.dump(tree), functions
+        return ast_shape(tree), functions
     finally:
         for node, body in restore:
             node.body = body
