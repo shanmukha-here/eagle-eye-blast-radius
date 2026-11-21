@@ -199,7 +199,15 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             mask, replace = recovered
             selected = {n for group in plan for n in group}
             extra = {n for n, bit in scheduler.bits.items() if not bit or bit & mask}
-            selected = extra if replace else selected | extra
+            # The import closure widens to cover definition side effects. A
+            # long test introduced by that closure still needs a trace route
+            # through at least one changed module.
+            introduced = (extra - selected) & long_cases.tests.keys()
+            retained = long_cases.recovery_scope(text, introduced) if introduced else introduced
+            skipped = introduced - retained
+            if skipped:
+                precision.stats["recovery_long_unobserved"] = sorted(skipped)
+            selected = (extra if replace else selected | extra) - skipped
             plan = scheduler.repack(selected, plan)
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace

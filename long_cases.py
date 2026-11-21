@@ -263,6 +263,25 @@ class LongCases:
         except (OSError, UnknownChange, UnicodeError, ValueError):
             return None
 
+    def recovery_scope(self, text, active):
+        """Keep long tests with a recorded route to the recovered module."""
+        if self.index is None or not self.index.mask("module_coverage"):
+            return active
+        try:
+            edits = split_diff(text)
+        except UnknownChange:
+            return active
+        if any(not path.startswith("sqlglot/") or not path.endswith(".py")
+               or path.endswith("/__init__.py") for path in edits):
+            return active
+        observed = 0
+        for path in edits:
+            details = self.impact.details
+            observed |= (details.imports.get(path, 0) | details.dialects.get(path, 0) |
+                         self.impact.visitors.get(path, 0))
+        return {test for test in active if observed & self.scheduler.bits[test]
+                or any(self.index.mask(f"{self.tests[test]}:{path}") for path in edits)}
+
     def apply(self, text, workers, workspace, cpu_limit, declaration=False):
         self.stats = {}
         if self.index is None or "sqlglot" in sys.modules:
