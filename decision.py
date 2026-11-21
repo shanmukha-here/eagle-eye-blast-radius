@@ -150,8 +150,6 @@ class Execution:
         self.ctx = multiprocessing.get_context("fork")
         # Both numerical libraries start single-threaded in the pinned image.
         # Their imports are shared; SQLGlot and test modules load only in a child.
-        import pandas.testing
-        import duckdb
         if "sqlglot" in sys.modules or len(os.listdir("/proc/self/task")) != 1:
             self.budget = 0.0
 
@@ -202,7 +200,7 @@ class Execution:
         for name in requested:
             cheapest &= ~(1 << self.names[name])
         gain = (cost(self.scheduler, mask) - cost(self.scheduler, cheapest)) / 1000
-        if gain < 0.4:
+        if len(original) < 32 or not checks or gain < 7.0:
             return mask
         # Repacking can leave the same long test on the critical worker even
         # after many cheap tests pass. Skip work whenever it cannot pay for itself.

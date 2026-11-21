@@ -14,6 +14,7 @@ from observed import Observers
 from optimizer_probe import Replay
 from miniatures import Miniatures
 from startup import Startup
+from narrow import Narrow
 from impact import Impact
 from refine import Details
 
@@ -78,6 +79,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     impact.details.miniatures = Miniatures(profile["ids"], base, map_path.parent)
     impact.scheduler = scheduler
     patches = sorted((data / "commits").glob("*.patch"))
+    narrow = Narrow(impact, map_path.parent)
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
     for path in patches:
@@ -85,7 +87,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         if time.monotonic() < deadline and path.stat().st_size <= 1_000_000:
             try:
                 text = path.read_text("utf-8")
-                mask = execution.refine(text, impact.select(text))
+                mask = execution.refine(text, narrow.select(text, impact.select(text)))
             except UnicodeError:
                 pass
         workers = scheduler.schedule(mask)

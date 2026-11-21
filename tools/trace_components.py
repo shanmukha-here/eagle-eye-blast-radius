@@ -22,7 +22,7 @@ def definitions(cls, field):
     for base in type.__getattribute__(cls, "__mro__"):
         values = type.__getattribute__(base, "__dict__")
         module = values.get("__module__", "")
-        if field in values and module.startswith(MODULES):
+        if field in values and (module in FAMILIES or module.startswith(MODULES)):
             keys.append(f"component:{module.replace('.', '/')}.py:{base.__qualname__}:{field}")
     return keys
 
@@ -45,7 +45,7 @@ class ComponentType(type):
     def __new__(meta, name, bases, namespace, **kwargs):
         cls = super().__new__(meta, name, bases, namespace, **kwargs)
         module = namespace.get("__module__", "")
-        if module.startswith(MODULES) and "__getattribute__" not in namespace:
+        if (module in FAMILIES or module.startswith(MODULES)) and ("__getattribute__" not in namespace or module in FAMILIES):
             prefix = f"component:{module.replace('.', '/')}.py:{cls.__qualname__}:"
             for field, val in namespace.items():
                 if field.isupper() and type(val) in (str, int, float, bool):
