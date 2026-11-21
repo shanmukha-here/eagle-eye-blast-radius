@@ -1,5 +1,4 @@
 """Use small, patched workloads before retaining long integration tests."""
-import ast
 import contextlib
 import multiprocessing
 import os
@@ -10,13 +9,13 @@ import time
 from pathlib import Path
 
 from decision import affected_dialects, overlay
-from impact import patched, split_diff, structure, UnknownChange
+from impact import split_diff, UnknownChange
 from miniatures import CORE
-from stress_guard import eligible, same_full_predicates
 
 
+# Reduced parser runs did not preserve full-size failures. The intersection's
+# original parser safeguards own that test.
 LONG_TESTS = {
-    "test_max_nodes": "parser",
     "test_execute_tpcds": "tpcds",
     "test_generator_memory": "memory",
     "test_execute_tpch": "execute",
@@ -32,16 +31,12 @@ def probe(connection, root, targets, edits):
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(root))
     os.chdir(root)
-    from parser_probe import exercise
     from query_sentinel import check
     from short_probe import execute, memory, optimized
 
     for number, kind in targets:
         try:
-            if kind == "parser":
-                exercise()
-                passed = True
-            elif kind == "memory":
+            if kind == "memory":
                 passed = memory(affected_dialects(edits))
             else:
                 passed = {"tpcds": check, "execute": execute, "optimized": optimized}[kind]()
@@ -54,10 +49,9 @@ def probe(connection, root, targets, edits):
 
 
 class LongGate:
-    def __init__(self, scheduler, profile_ids, impact, count):
+    def __init__(self, scheduler, profile_ids, base, count):
         self.scheduler = scheduler
-        self.impact = impact
-        self.base = impact.root.resolve()
+        self.base = base.resolve()
         self.ctx = multiprocessing.get_context("fork")
         self.available = min(70.0, count * 1.2)
         self.long = {}
@@ -68,27 +62,7 @@ class LongGate:
             if name in LONG_TESTS:
                 self.long[number] = LONG_TESTS[name]
 
-    def parser_supported(self, edits):
-        if len(edits) != 1:
-            return False
-        (path, hunks), = edits.items()
-        if path != "sqlglot/parser.py":
-            return False
-        try:
-            source, (outer, scopes), _ = self.impact.base(path)
-            other, revised = structure(ast.parse(patched(source, hunks)))
-            if outer != other or scopes.keys() != revised.keys():
-                return False
-            changed = [(scopes[k][3], revised[k][3]) for k in scopes if scopes[k][2] != revised[k][2]]
-            return len(changed) == 1 and eligible(path, *changed[0]) and same_full_predicates(
-                *changed[0], self.impact.details.miniatures.stress
-            )
-        except (OSError, SyntaxError, UnknownChange, ValueError, RecursionError):
-            return False
-
     def supported(self, kind, edits):
-        if kind == "parser":
-            return self.parser_supported(edits)
         if kind == "tpcds":
             # SQL fingerprints do not check changes to the executor itself.
             return not any(path in CORE or path.startswith("sqlglot/executor/") or path == "sqlglot/serde.py"
