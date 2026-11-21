@@ -375,7 +375,9 @@ class LongCases:
                     return None
             elif not self.verified_source(path, hunks):
                 return None
-            if test in self.recovery_scope(text, {test}, edits={path: hunks}):
+            readers = self.impact.files.get(path, {}).get(0, 0)
+            if (readers & self.scheduler.bits[test] or
+                    test in self.recovery_scope(text, {test}, edits={path: hunks})):
                 candidates.append(path)
         if len(candidates) != 1 or not candidates[0].startswith("sqlglot/"):
             return None

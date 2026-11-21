@@ -37,6 +37,30 @@ def query_worker(connection, root, store, checks, executor_only, cap):
         connection.close()
 
 
+def replay_in_child(context, workspace, target, args, cap):
+    root = workspace.root()
+    started = time.monotonic()
+    with contextlib.ExitStack() as stack:
+        recv, send = context.Pipe(duplex=False)
+        stack.enter_context(recv)
+        stack.enter_context(send)
+        child = context.Process(target=target, args=(send, root, *args, cap))
+        child.start()
+        send.close()
+        try:
+            wait = max(0.0, 1.60 * cap - (time.monotonic() - started))
+            return recv.poll(wait) and recv.recv() is True
+        finally:
+            child.join(0.02)
+            if child.is_alive():
+                with contextlib.suppress(ProcessLookupError):
+                    if os.getpgid(child.pid) == child.pid:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    else:
+                        child.kill()
+                child.join()
+
+
 class QueryGate:
     def __init__(self, directory, impact, scheduler, tests):
         filename = directory / "query_gate.index"
@@ -131,29 +155,9 @@ class QueryGate:
                 self.stats["tpcds_over_budget"] = len(checks)
                 return workers
             self.stats["tpcds_queries"] = len(checks)
-            root = workspace.root()
-            started = time.monotonic()
-            with contextlib.ExitStack() as stack:
-                recv, send = self.context.Pipe(duplex=False)
-                stack.enter_context(recv)
-                stack.enter_context(send)
-                child = self.context.Process(target=query_worker,
-                                             args=(send, root, self.store, checks, executor_only, cap))
-                child.start()
-                send.close()
-                try:
-                    if recv.poll(max(0.0, 1.6 * cap - (time.monotonic() - started))) and recv.recv() is True:
-                        self.stats["tpcds_cleared"] = True
-                        return reduced
-                finally:
-                    child.join(0.02)
-                    if child.is_alive():
-                        with contextlib.suppress(ProcessLookupError):
-                            if os.getpgid(child.pid) == child.pid:
-                                os.killpg(child.pid, signal.SIGKILL)
-                            else:
-                                child.kill()
-                        child.join()
+            if replay_in_child(self.context, workspace, query_worker, (self.store, checks, executor_only), cap):
+                self.stats["tpcds_cleared"] = True
+                return reduced
         except (EOFError, OSError, UnknownChange, SyntaxError, ValueError, RecursionError):
             pass
         return workers

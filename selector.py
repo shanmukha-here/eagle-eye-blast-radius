@@ -31,6 +31,7 @@ from reference_replay import ReferenceReplay
 from long_gate import LongGate
 from long_cases import LongCases
 from tpcds_replay import QueryGate
+from tpcds_render import RenderProof
 from receiver_edits import ReceiverEdits
 from registry_guard import changes_routing
 from precision import Precision
@@ -245,6 +246,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     queries = QueryGate(map_path.parent, impact, scheduler, tests)
     queries.recovery_cpu = min(20.0, len(patches) * 0.32)
     long_cases = LongCases(map_path.parent, impact, scheduler, tests, len(patches))
+    renders = RenderProof(map_path.parent, scheduler, queries.test, len(patches), impact, long_cases)
     short_bits = 0
     for number, bit in scheduler.bits.items():
         if number not in long_cases.tests:
@@ -301,6 +303,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             plan = scheduler.repack(selected, plan)
             if queries.test in selected:
                 with PatchWorkspace(base.resolve(), text) as workspace:
+                    plan = renders.apply(text, plan, workspace, deadline)
                     plan = queries.recovery(text, plan, long_cases, workspace, deadline)
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace
@@ -326,7 +329,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
                            busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
-                           **queries.stats, **precision.stats, **long_cases.stats, **risk.stats)
+                           **queries.stats, **renders.stats, **precision.stats, **long_cases.stats, **risk.stats)
             print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
@@ -346,6 +349,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         beginning = seconds() if report else 0
         risk_text = None
         queries.stats = {}
+        renders.stats = {}
         precision.stats = {}
         long_cases.stats = {}
         verify.attempted.clear()
