@@ -188,7 +188,7 @@ class Execution:
                       and path != "sqlglot/dialects/dialect.py"):
                     checks.append(("parser", name))
                 elif (name.endswith("::test_execute_tpcds") and single and
-                      (path in CORE or path.startswith(("sqlglot/parsers/", "sqlglot/optimizer/")))
+                      path.startswith(("sqlglot/parsers/", "sqlglot/optimizer/"))
                       and not path.endswith("/__init__.py")):
                     checks.append(("tpcds", name))
         if checks and len(cheap) > 40 and inexpensive:
