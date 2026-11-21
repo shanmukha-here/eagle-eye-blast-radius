@@ -29,8 +29,22 @@ def safe_value(node, names):
     if isinstance(node, ast.Dict):
         return all(key is not None and safe_value(key, names) and safe_value(value, names)
                    for key, value in zip(node.keys, node.values, strict=True))
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        return isinstance(node.operand, ast.Constant) and type(node.operand.value) in (int, float)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub, ast.Not)):
+        return safe_value(node.operand, names)
+    if isinstance(node, ast.JoinedStr):
+        return all(safe_value(part, names) for part in node.values)
+    if isinstance(node, ast.FormattedValue):
+        return safe_value(node.value, names) and (
+            node.format_spec is None or safe_value(node.format_spec, names))
+    if isinstance(node, ast.Subscript):
+        return safe_value(node.value, names) and safe_value(node.slice, names)
+    if isinstance(node, ast.Slice):
+        return all(value is None or safe_value(value, names)
+                   for value in (node.lower, node.upper, node.step))
+    if isinstance(node, ast.Compare):
+        return all(safe_value(value, names) for value in (node.left, *node.comparators))
+    if isinstance(node, ast.BoolOp):
+        return all(safe_value(value, names) for value in node.values)
     return False
 
 
@@ -96,6 +110,31 @@ def uses_local_names(node):
     names = {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
     return names - SQL_FUNCTIONS - SQL_ERRORS - {"sqlglot", "self"}
 
+
+def safe_iter(node, names):
+    if safe_value(node, names):
+        return True
+    if isinstance(node, ast.Call) and not node.keywords:
+        if isinstance(node.func, ast.Name) and node.func.id in {"enumerate", "range", "zip", "reversed"}:
+            return all(safe_iter(arg, names) for arg in node.args)
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {"items", "keys", "values"}:
+            return not node.args and safe_value(node.func.value, names)
+    return False
+
+
+def error_context(node, names):
+    if not isinstance(node, ast.With) or len(node.items) != 1 or len(node.body) != 1:
+        return False
+    item = node.items[0]
+    call = item.context_expr
+    statement = node.body[0]
+    return (item.optional_vars is None and isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute) and call.func.attr == "assertRaises"
+            and isinstance(call.func.value, ast.Name) and call.func.value.id == "self"
+            and len(call.args) == 1 and not call.keywords and sql_name(call.args[0], SQL_ERRORS)
+            and isinstance(statement, ast.Expr) and sql_expression(statement.value, names)
+            and not safe_value(statement.value, names))
+
 def safe_body(body, methods, names=frozenset()):
     for stmt in body:
         if isinstance(stmt, ast.Expr):
@@ -103,10 +142,17 @@ def safe_body(body, methods, names=frozenset()):
                 continue
             if direct_call(stmt.value, methods, names) or sql_assertion(stmt.value, names):
                 continue
-        if isinstance(stmt, ast.For) and not stmt.orelse and safe_value(stmt.iter, names):
+        if isinstance(stmt, ast.Assign) and safe_value(stmt.value, names):
+            targets = [bindings(target) for target in stmt.targets]
+            if all(target is not None for target in targets):
+                names = names.union(*targets)
+                continue
+        if isinstance(stmt, ast.For) and not stmt.orelse and safe_iter(stmt.iter, names):
             bound = bindings(stmt.target)
             if bound and safe_body(stmt.body, methods, names | bound):
                 continue
+        if error_context(stmt, names):
+            continue
         if isinstance(stmt, ast.With) and all(item.optional_vars is None and
                 direct_call(item.context_expr, {"subTest"}, names) for item in stmt.items):
             if safe_body(stmt.body, methods, names):

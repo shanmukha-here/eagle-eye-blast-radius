@@ -104,15 +104,17 @@ def worker(send, root, index, tasks, cap):
                 for i in units:
                     kind, *payload = index.case(i)
                     state.clear()
+                    send.send(("started", 1))
                     enabled = True
                     try:
                         if kind == "helper":
                             name, args, kwargs = payload
                             getattr(instance, name)(*args, **kwargs)
-                        elif kind == "direct":
+                        elif kind in ("direct", "block"):
                             recipe, values = payload
                             namespace = getattr(type(instance), test).__globals__
-                            eval(recipe, namespace, {"self": instance, **values})
+                            run = eval if kind == "direct" else exec
+                            run(recipe, namespace, {"self": instance, **values})
                         else:
                             raise ValueError("Unsupported assertion payload")
                     finally:
@@ -146,7 +148,8 @@ class AssertionReplay:
         self.stats = {}
 
     def refine(self, text, plan, workspace=None):
-        self.stats = {"candidate_units": 0, "replayed_units": 0, "dropped_tests": 0}
+        self.stats = {"candidate_units": 0, "replayed_units": 0, "started_units": 0,
+                      "dropped_tests": 0}
         if self.index is None or not plan:
             return plan
         try:
@@ -220,6 +223,8 @@ class AssertionReplay:
                         passing.add(value)
                     elif outcome == "replayed":
                         self.stats["replayed_units"] += value
+                    elif outcome == "started":
+                        self.stats["started_units"] = self.stats.get("started_units", 0) + value
                     elif outcome == "hazard":
                         self.stats.setdefault("hazards", []).extend(value)
             except EOFError:

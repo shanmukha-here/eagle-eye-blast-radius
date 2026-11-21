@@ -30,6 +30,10 @@ def test_only_the_independent_harness_can_be_replayed():
 def test_direct_assertion_grammar():
     assert safe_body(ast.parse('self.assertEqual(transpile("SELECT 1")[0], "SELECT 1")').body, ())
     assert safe_body(ast.parse('self.assertRaises(ParseError, parse_one, "SELECT ,")').body, ())
+    assert safe_body(ast.parse('with self.assertRaises(ParseError): parse_one("SELECT ,")').body, ())
+    loops = "cases = {'SELECT 1': 'SELECT 1'}\nfor sql, expected in cases.items():\n"
+    loops += "    with self.subTest(f'{sql}'):\n        self.assertEqual(transpile(sql)[0], expected)"
+    assert safe_body(ast.parse(loops).body, ())
     assert not safe_body(ast.parse('self.assertEqual(transpile(read_file())[0], "SELECT 1")').body, ())
     assert not safe_body(ast.parse('self.assertEqual(transpile("SELECT 1", **kwargs)[0], "SELECT 1")').body, ())
 

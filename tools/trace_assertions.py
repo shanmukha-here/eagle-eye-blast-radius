@@ -18,7 +18,7 @@ import warnings
 
 import pytest
 
-from assertion_units import HELPERS, admissible, literals, sql_assertion, uses_local_names
+from assertion_units import HELPERS, admissible, error_context, literals, sql_assertion, uses_local_names
 
 root = str(Path.cwd().resolve()) + "/"
 monitor = sys.monitoring
@@ -54,7 +54,28 @@ def direct(recipe, names, call):
         return call()
 
 
+@contextmanager
+def direct_block(recipe, names, local):
+    if active is None:
+        yield
+        return
+    args = {name: local[name] for name in names if name in local}
+    payload = ["block", recipe, args] if len(args) == len(names) and literals(args) else ["opaque", "assertion"]
+    with unit(payload):
+        yield
+
+
 class Instrument(ast.NodeTransformer):
+    def visit_With(self, node):
+        names = sorted(uses_local_names(node))
+        if error_context(node, names):
+            wrapper = ast.Name(id="_blast_direct_block", ctx=ast.Load())
+            args = [ast.Constant(ast.unparse(node)), ast.Constant(tuple(names)),
+                    ast.Call(func=ast.Name(id="locals", ctx=ast.Load()), args=[], keywords=[])]
+            outer = ast.withitem(context_expr=ast.Call(func=wrapper, args=args, keywords=[]))
+            return ast.copy_location(ast.With(items=[outer], body=[node]), node)
+        return self.generic_visit(node)
+
     def visit_Expr(self, node):
         call = node.value
         names = sorted(uses_local_names(call))
@@ -186,6 +207,7 @@ def pytest_sessionstart(session):
     sys.addaudithook(audit)
     SourceFileLoader.get_code = test_code
     builtins._blast_direct_assertion = direct
+    builtins._blast_direct_block = direct_block
 
 
 def pytest_collection_finish(session):
@@ -230,6 +252,7 @@ def pytest_sessionfinish(session, exitstatus):
     monitor.set_events(tool, 0)
     SourceFileLoader.get_code = normal_code
     del builtins._blast_direct_assertion
+    del builtins._blast_direct_block
     for owner, name, previous in reversed(originals):
         setattr(owner, name, previous)
     out.close()

@@ -65,10 +65,11 @@ def main(trace, output):
             dump = base64.b85decode(payload)
             unit = marshal.loads(dump)
             flags = ELIGIBLE if name not in opaque and name not in hazardous else 0
-            if unit and unit[0] == "direct":
-                _, recipe, bindings = unit
-                program = compile(recipe, "<clean assertion>", "eval", dont_inherit=True)
-                dump = marshal.dumps(("direct", program, bindings))
+            if unit and unit[0] in ("direct", "block"):
+                kind, recipe, bindings = unit
+                mode = "eval" if kind == "direct" else "exec"
+                program = compile(recipe, "<clean assertion>", mode, dont_inherit=True)
+                dump = marshal.dumps((kind, program, bindings))
             query_key = None
             if query_rows and name.endswith("::test_execute_tpcds") and unit and unit[0] == "subtest":
                 args = unit[1]
@@ -78,7 +79,7 @@ def main(trace, output):
                     if query_key is not None:
                         unit = ("query", slot, query_key)
                         dump = marshal.dumps(unit)
-            if flags and unit and unit[0] in ("helper", "direct") and not hazards:
+            if flags and unit and unit[0] in ("helper", "direct", "block") and not hazards:
                 flags |= REPLAYABLE
             counts["units"] += 1
             counts["replayable"] += bool(flags & REPLAYABLE)
