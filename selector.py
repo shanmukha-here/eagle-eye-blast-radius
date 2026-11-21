@@ -20,6 +20,7 @@ from miniatures import CORE, Miniatures
 from memo_witness import bypass_only
 from startup import Startup
 from narrow import Narrow
+from observation_index import ObservationIndex
 from parser_signal import unexecuted_return
 from long_gate import LongGate
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
@@ -195,6 +196,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     narrow = Narrow(impact, map_path.parent)
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
+    observation = ObservationIndex(impact, map_path.with_name("values.z"))
     parser_bit = impact.details.miniatures.tests.get("parser", 0)
     parser_id = next((number for number, bit in scheduler.bits.items() if bit and bit == parser_bit), None)
     deadline = time.monotonic() + min(150, 2.5 * len(patches) + 5)
@@ -205,6 +207,14 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 plan = scheduler.intersect(before, mask)
             else:
                 text = path.read_text("utf-8")
+                direct = observation.edit(text)
+                if direct is not None:
+                    kind, observed = direct
+                    observed_plan = json.loads(scheduler.schedule(observed, pad=False))
+                    if kind == "default" or scheduler.cost(observed_plan) <= 3000:
+                        workers = json.dumps(observed_plan, separators=(",", ":"))
+                        sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
+                        continue
                 with PatchWorkspace(base.resolve(), text) as workspace:
                     mask = execution.refine(text, narrow.select(text, impact.select(text)), workspace)
                     keep = 0
