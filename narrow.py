@@ -7,6 +7,9 @@ from pathlib import Path
 from impact import patched, split_diff, syntax, UnknownChange
 
 
+STATEMENT_CONTAINERS = (ast.stmt, ast.ExceptHandler, ast.match_case)
+
+
 @lru_cache(maxsize=96)
 def imports(tree):
     edges = []
@@ -14,16 +17,16 @@ def imports(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             edges.append((context, ast.dump(node)))
             return
-        if isinstance(node, (ast.If, ast.IfExp, ast.While)):
+        if isinstance(node, (ast.If, ast.While)):
             context += (ast.dump(node.test),)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             context += (node.name,)
         for field, value in ast.iter_fields(node):
             if isinstance(value, list):
                 for child in value:
-                    if isinstance(child, ast.AST):
+                    if isinstance(child, STATEMENT_CONTAINERS):
                         visit(child, context + (field,))
-            elif isinstance(value, ast.AST):
+            elif isinstance(value, STATEMENT_CONTAINERS):
                 visit(value, context + (field,))
     visit(tree, ())
     return tuple(edges)
