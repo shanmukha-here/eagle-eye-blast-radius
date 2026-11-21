@@ -14,6 +14,7 @@ from struct import Struct
 import sys
 import time
 
+from cpu_budget import seconds
 from impact import patched, split_diff, syntax, UnknownChange
 from narrow import imports
 from precision_body import footprint
@@ -189,7 +190,7 @@ def work(send, root, jobs, fingerprints, cap):
 
 
 class LongCases:
-    def __init__(self, directory, impact, scheduler, tests):
+    def __init__(self, directory, impact, scheduler, tests, count=0):
         self.impact = impact
         self.scheduler = scheduler
         self.tests = {}
@@ -203,6 +204,7 @@ class LongCases:
             self.index = PrecisionIndex(path)
             self.fingerprints = (directory / "long_cases.fingerprints").read_bytes()
         self.ctx = multiprocessing.get_context("fork")
+        self.recovery_cpu = min(9.0, count * 0.15)
         self.stats = {}
 
     def changes(self, text, declaration=False):
@@ -333,10 +335,16 @@ class LongCases:
             return self.scheduler.repack(chosen - cleared, workers)
         return workers
 
-    def recovery_replay(self, text, workers, base, workspace_factory, cpu_limit, active):
+    def recovery_replay(self, text, workers, base, workspace_factory, active, deadline):
         """Replay restored long tests with complete single-module evidence."""
-        if not active or cpu_limit(0.27) < 0.25:
+        if not active or self.recovery_cpu < 0.3:
             return workers
+        started = seconds()
+
+        def allowance(requested):
+            return max(0, min(requested, self.recovery_cpu - (seconds() - started),
+                              (deadline - time.monotonic() - 0.30) / 1.60))
+
         try:
             edits = split_diff(text)
             if len(edits) != 1:
@@ -357,9 +365,13 @@ class LongCases:
             active = {test for test in active if cases[self.tests[test]]}
             if active:
                 with workspace_factory(base, text) as workspace:
-                    return self.apply(text, workers, workspace, cpu_limit, declaration=True, only=active)
+                    return self.apply(text, workers, workspace, allowance, declaration=True, only=active)
         except (OSError, SyntaxError, UnicodeError, ValueError, UnknownChange, RecursionError):
             pass
+        finally:
+            cpu = seconds() - started
+            self.recovery_cpu -= cpu
+            self.stats["recovery_long_cpu"] = round(cpu, 6)
         return workers
 
     def prove(self, workspace, jobs, cap):

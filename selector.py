@@ -223,7 +223,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     queries = QueryGate(map_path.parent, impact, scheduler, tests)
-    long_cases = LongCases(map_path.parent, impact, scheduler, tests)
+    long_cases = LongCases(map_path.parent, impact, scheduler, tests, len(patches))
     receivers = ReceiverEdits(map_path.with_name("receiver.index"), impact)
     precision = Precision(map_path.parent, impact, scheduler, queries.test)
     risk = RiskPolicy(map_path.parent, impact, precision, scheduler, tests)
@@ -259,8 +259,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 precision.stats["recovery_long_unobserved"] = sorted(skipped)
             selected = (extra if replace else selected | extra) - skipped
             plan = scheduler.repack(selected, plan)
-            plan = long_cases.recovery_replay(text, plan, base.resolve(), PatchWorkspace, budget.cap,
-                                             retained & (extra - selected))
+            plan = long_cases.recovery_replay(text, plan, base.resolve(), PatchWorkspace,
+                                             retained & (extra - selected), deadline)
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace
         if text:
