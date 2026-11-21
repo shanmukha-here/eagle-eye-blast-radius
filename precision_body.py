@@ -1,6 +1,7 @@
 """Project isolated function-body changes onto the original executed statements."""
 import ast
 from difflib import SequenceMatcher
+from functools import lru_cache
 from types import CodeType
 
 from impact import UnknownChange, patched, split_diff, syntax
@@ -83,6 +84,7 @@ def body_regions(before, after):
     return bounds, anchors, conditions
 
 
+@lru_cache(maxsize=8)
 def footprint(impact, text):
     """Bound a diff to compiled, same-binding bodies with no namespace edits."""
     try:

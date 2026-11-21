@@ -28,10 +28,12 @@ from surface import Surface
 from parser_signal import unexecuted_return
 from reference_replay import ReferenceReplay
 from long_gate import LongGate
+from long_cases import LongCases
 from tpcds_replay import QueryGate
 from receiver_edits import ReceiverEdits
 from registry_guard import changes_routing
 from precision import Precision
+from recovery import Recovery
 from risk_policy import RiskPolicy
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details
@@ -115,7 +117,7 @@ class Scheduler:
             filtered = [group for group in filtered if group]
             if len({n for group in filtered for n in group}) == len(selected):
                 variants.append(filtered)
-        return min(variants, key=self.cost)
+        return min(variants, key=lambda groups: (self.cost(groups), len(groups)))
 
 
 def needs_parser_guard(impact, text):
@@ -182,19 +184,30 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     execution = Execution(scheduler, profile["ids"], base, len(patches), impact.details.lines)
     gate = LongGate(scheduler, profile["ids"], base, len(patches))
     queries = QueryGate(map_path.parent, impact, scheduler, tests)
+    long_cases = LongCases(map_path.parent, impact, scheduler, tests)
     receivers = ReceiverEdits(map_path.with_name("receiver.index"), impact)
     precision = Precision(map_path.parent, impact, scheduler, queries.test)
     risk = RiskPolicy(map_path.parent, impact, precision, scheduler, tests)
+    recovery = Recovery(map_path.parent, impact, receivers)
     fallback_plan = scheduler.intersect(impact.full, impact.full)
     report = os.environ.get("BLAST_ASSERTION_REPORT") == "1"
 
-    def emit(path, plan, beginning, text=None):
-        plan = risk.apply(text, plan, {**queries.stats, **precision.stats} if text else None)
+    def emit(path, plan, beginning, text=None, verified=False):
+        plan = risk.apply(None if verified else text, plan, {**queries.stats, **precision.stats} if text else None)
+        recovered = None if verified else recovery.declarations(text)
+        if recovered is not None:
+            mask, replace = recovered
+            selected = {n for group in plan for n in group}
+            extra = {n for n, bit in scheduler.bits.items() if not bit or bit & mask}
+            selected = extra if replace else selected | extra
+            plan = scheduler.repack(selected, plan)
+            precision.stats["import_recovery"] = mask.bit_count()
+            precision.stats["recovery_replaces"] = replace
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
                            busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
-                           **queries.stats, **precision.stats, **risk.stats)
+                           **queries.stats, **precision.stats, **long_cases.stats, **risk.stats)
             print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
@@ -215,6 +228,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         risk_text = None
         queries.stats = {}
         precision.stats = {}
+        long_cases.stats = {}
         before = mask = impact.full
         try:
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
@@ -224,6 +238,12 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 if hard_topology(text) or opaque_format(text):
                     emit(path, fallback_plan, beginning)
                     continue
+                if "NUMERIC_ESCAPES" in text:
+                    observed = precision.registry(text)
+                    if observed is not None:
+                        plan = json.loads(scheduler.schedule(observed, pad=False))
+                        emit(path, plan, beginning, verified=True)
+                        continue
                 if changes_routing(impact, text):
                     observed = precision.registry(text)
                     plan = (fallback_plan if observed is None else
@@ -235,7 +255,38 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     emit(path, fallback_plan, beginning)
                     continue
                 risk_text = text
+                recovered = recovery.declarations(text) if metadata is None else None
+                if recovered is not None and recovered[1]:
+                    mask = recovered[0]
+                    plan = json.loads(scheduler.schedule(mask, pad=False))
+                    with PatchWorkspace(base.resolve(), text) as workspace:
+                        plan = long_cases.apply(text, plan, workspace, budget.cap, declaration=True)
+                        if plan and all(scheduler.durations[n] < 3000 for w in plan for n in w):
+                            checked = verify.refine(text, plan, workspace=workspace)
+                            # Definition-time behavior can change even when
+                            # the candidate methods pass their assertions.
+                            if checked:
+                                plan = checked
+                    precision.stats["import_recovery"] = mask.bit_count()
+                    precision.stats["recovery_replaces"] = True
+                    emit(path, plan, beginning, risk_text, verified=True)
+                    continue
                 direct = observation.edit(text) if metadata is None else ("metadata", metadata)
+                local = precision.local_plan(text) if not direct else None
+                if local is not None:
+                    plan = json.loads(scheduler.schedule(local, pad=False))
+                    with PatchWorkspace(base.resolve(), text) as workspace:
+                        plan = long_cases.apply(text, plan, workspace, budget.cap)
+                        if plan and precision.short_certificate(text):
+                            cpu = seconds() if report else 0.0
+                            before_count = sum(map(len, plan))
+                            plan = verify.refine(text, plan, workspace=workspace, short_only=True)
+                            if not plan:
+                                precision.stats["short_certified"] = before_count
+                            if report:
+                                precision.stats["short_cpu"] = round(seconds() - cpu, 6)
+                    emit(path, plan, beginning, risk_text, verified=True)
+                    continue
                 if direct is not None:
                     kind, observed = direct
                     observed_plan = json.loads(scheduler.schedule(observed, pad=False))
@@ -246,7 +297,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     ):
                         plan = references.apply(text, observed_plan)
                         plan = verify.refine(text, plan)
-                        emit(path, plan, beginning, risk_text)
+                        emit(path, plan, beginning, risk_text, verified=kind in ("metadata", "fixture"))
                         continue
                 with PatchWorkspace(base.resolve(), text) as workspace:
                     mask = execution.refine(text, narrow.select(text, impact.select(text)), workspace)
@@ -279,6 +330,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     active = {n for group in plan for n in group
                               if not scheduler.bits[n] or scheduler.bits[n] & observed}
                     replay_plan, query_mask = precision.body(text, scheduler.repack(active, plan))
+                    replay_plan = long_cases.apply(text, replay_plan, workspace, budget.cap)
                     plan = references.apply(text, replay_plan)
                     if not legacy.graph_changed:
                         plan = queries.apply(text, plan, workspace, budget.cap, query_mask)
@@ -287,7 +339,17 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         if unexecuted_return(impact, text, parser_bit):
                             retained = {n for group in plan for n in group if n != parser_id}
                             plan = scheduler.repack(retained, plan)
-                    plan = verify.refine(text, plan)
+                    short_only = bool(plan) and all(scheduler.durations[n] < 3000 for group in plan for n in group)
+                    if short_only and precision.short_certificate(text):
+                        cpu = seconds() if report else 0.0
+                        checked = verify.refine(text, plan, workspace=workspace, short_only=True)
+                        if not checked:
+                            precision.stats["short_certified"] = sum(map(len, plan))
+                        if report:
+                            precision.stats["short_cpu"] = round(seconds() - cpu, 6)
+                        plan = checked
+                    else:
+                        plan = verify.refine(text, plan, workspace=workspace)
         except UnicodeError:
             plan = fallback_plan
         emit(path, plan, beginning, risk_text)

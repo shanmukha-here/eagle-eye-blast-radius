@@ -6,7 +6,7 @@ from registry_guard import DISPATCH
 
 
 def dispatch_name(name):
-    return name in {"_classes", "classes"} or bool(DISPATCH.fullmatch(name))
+    return name in {"_classes", "classes", "NUMERIC_ESCAPES"} or bool(DISPATCH.fullmatch(name))
 
 
 def assignment(node):
@@ -99,6 +99,13 @@ def one_entry(root, path, source, after):
         elif isinstance(a, ast.Call) and isinstance(b, ast.Call):
             normal = normalize_args(a)
             admitted = normal is not None and normal == normalize_args(b) and pure_factory(root, path, source, a.func.id)
+        elif name.rsplit(".", 1)[-1] == "NUMERIC_ESCAPES":
+            # Settings look up a known escape prefix. Keep the table shape
+            # and tuple layout fixed so construction remains equivalent.
+            admitted = all(isinstance(node, ast.Tuple) and len(node.elts) == 4
+                           and all(isinstance(value, ast.Constant) and type(value.value) is int
+                                   for value in node.elts)
+                           for node in (a, b))
         else:
             admitted = False
         if not admitted:

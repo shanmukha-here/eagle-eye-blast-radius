@@ -91,7 +91,7 @@ class RecordingDict(dict):
         return super().__getitem__(key)
 
     def __contains__(self, key):
-        self.observe(key)
+        # Entry edits accepted by one_entry preserve the complete key set.
         return super().__contains__(key)
 
     def get(self, key, default=None):

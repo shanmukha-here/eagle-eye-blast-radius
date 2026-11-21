@@ -80,3 +80,7 @@ tools/*
 !risk_policy.py
 !risk_model.bin
 !tools/build_risk_names.py
+!long_cases.py
+!recovery.py
+!tools/build_long_cases.py
+!tools/build_import_closure.py

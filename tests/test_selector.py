@@ -55,3 +55,12 @@ class SchedulingTests(unittest.TestCase):
                  {"number": 3, "id": "first", "seconds": 0.1}]
         schedule = json.loads(Scheduler(tests, ["first", "second"]).schedule(1))
         self.assertEqual({t for worker in schedule for t in worker}, {0, 3})
+
+
+class StartupTests(unittest.TestCase):
+    def test_worker_is_added_only_for_a_strict_cost_improvement(self):
+        counts = [2.0, 2.001]
+        for load, expected in zip(counts, [1, 2]):
+            tests = [{"number": i, "id": str(i), "seconds": load} for i in range(2)]
+            schedule = Scheduler(tests, ["0", "1"])
+            self.assertEqual(len(json.loads(schedule.schedule(3, pad=False))), expected)

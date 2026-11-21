@@ -55,7 +55,28 @@ class Collection:
         self.ids = [item.nodeid for item in session.items]
 
 
-def child(send, directory, ids, collect, cpu_cap):
+class ShortCohort:
+    def __init__(self, ids):
+        self.ids = set(ids)
+        self.phases = {}
+        self.failed = False
+
+    def pytest_collection_modifyitems(self, items):
+        items[:] = [item for item in items if item.nodeid in self.ids]
+
+    def pytest_runtest_logreport(self, report):
+        if report.failed or report.skipped:
+            self.failed = True
+        elif report.passed:
+            self.phases.setdefault(report.nodeid, set()).add(report.when)
+
+    def complete(self):
+        return not self.failed and self.ids == self.phases.keys() and all(
+            phases == {"setup", "call", "teardown"} for phases in self.phases.values()
+        )
+
+
+def child(send, directory, ids, collect, cpu_cap, cohort=False):
     try:
         os.setsid()
         signal.signal(signal.SIGPROF, signal.SIG_DFL)
@@ -65,12 +86,21 @@ def child(send, directory, ids, collect, cpu_cap):
             os.dup2(sink.fileno(), 2)
         os.chdir(directory)
         sys.path.insert(0, str(directory))
-        if not collect:
+        if not collect and not cohort:
             send.send(run_unittests(ids))
             return
         import pytest
 
         options = ["-q", "-p", "no:cacheprovider", "--rootdir", str(directory)]
+        if cohort:
+            os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+            checks = ShortCohort(ids)
+            paths = sorted({test.partition("::")[0] for test in ids})
+            result = pytest.main([*options, "--basetemp", str(Path(directory) / "pytest-run"), *paths],
+                                 plugins=[checks])
+            if result == pytest.ExitCode.OK and checks.complete():
+                send.send(ids)
+            return
         checks = Collection()
         options += ["--collect-only", "--continue-on-collection-errors", "tests"]
         pytest.main(options, plugins=[checks])
@@ -96,13 +126,13 @@ class ExactTests:
         if len(os.listdir("/proc/self/task")) != 1 or "sqlglot" in sys.modules:
             self.remaining = self.collection_remaining = 0.0
 
-    def refine(self, patch, plan):
+    def refine(self, patch, plan, workspace=None, short_only=False):
         remaining = min(self.remaining, self.deadline - time.monotonic())
         if remaining < 0.23 or not plan:
             return plan
         selected = {number for group in plan for number in group}
         weights = self.scheduler.durations
-        if len(selected) > 64:
+        if len(selected) > 64 or short_only and max(weights[n] for n in selected) >= 3000:
             return plan
         try:
             edits = split_diff(patch)
@@ -112,17 +142,24 @@ class ExactTests:
             return plan
         # A successful all-pass run can erase at least a worker's startup cost.
         names = sorted(self.nodes[n] for n in selected)
-        if not set(names) <= self.ready.keys():
-            return plan
-        fixtures = {node.rsplit("::", 1)[0]: self.ready[node] for node in names}
-        expected = (sum(weights[n] for n in selected) + sum(fixtures.values())) / 1000
+        cohort = not set(names) <= self.ready.keys()
+        expected = sum(weights[n] for n in selected) / 1000
+        if cohort:
+            if not short_only or len(selected) > 16 or expected > 1.0:
+                return plan
+            expected += 0.28
+        else:
+            fixtures = {node.rsplit("::", 1)[0]: self.ready[node] for node in names}
+            expected += sum(fixtures.values()) / 1000
         if expected > 2.55:
             return plan
         cap = min(remaining, self.scheduler.cost(plan) / 1250, max(0.9, 1.45 * expected + 0.65))
-        result = self.run(edits, names, cap, collect=False)
+        result = self.run(edits, names, cap, collect=False, workspace=workspace, cohort=cohort)
         if result is not None and all(name in self.numbers for name in result):
             passed = {self.numbers[name] for name in result}
             if passed <= selected:
+                if short_only and passed != selected:
+                    return plan
                 return self.scheduler.repack(selected - passed, plan)
         return plan
 
@@ -141,7 +178,7 @@ class ExactTests:
         failed = {n for n, node in self.nodes.items() if node not in present}
         return self.scheduler.repack(failed | {n for w in plan for n in w}, plan)
 
-    def run(self, edits, names, cap, collect):
+    def run(self, edits, names, cap, collect, workspace=None, cohort=False):
         cap = getattr(self, "cpu_limit", float)(cap)
         if cap < (0.5 if collect else 0.23):
             return None
@@ -154,15 +191,18 @@ class ExactTests:
 
         baseline = used()
         try:
-            if collect:
+            if collect or cohort:
                 # Warm only the testing machinery. SQLGlot stays cold in each child.
                 import pytest
 
                 if pytest.__version__.split(".")[0] != "9" or "sqlglot" in sys.modules:
                     return None
-            with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                overlay(self.root, root, edits, validate=not collect)
+            owned = workspace is None
+            directory = tempfile.TemporaryDirectory() if owned else contextlib.nullcontext(workspace.root())
+            with directory as current:
+                root = Path(current)
+                if owned:
+                    overlay(self.root, root, edits, validate=not collect)
                 with contextlib.ExitStack() as stack:
                     recv, send = self.ctx.Pipe(duplex=False)
                     stack.enter_context(recv)
@@ -170,7 +210,7 @@ class ExactTests:
                     available = cap - (used() - baseline)
                     if available <= 0.04:
                         return None
-                    run = self.ctx.Process(target=child, args=(send, root, names, collect, available))
+                    run = self.ctx.Process(target=child, args=(send, root, names, collect, available, cohort))
                     run.start()
                     send.close()
                     try:

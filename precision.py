@@ -1,7 +1,7 @@
 """Apply fine observation masks for verified bodies and dispatch values."""
 
 from impact import UnknownChange, patched, split_diff
-from precision_body import evidence, footprint
+from precision_body import evidence, footprint, range_mask
 from precision_index import PrecisionIndex
 from registry_keys import one_entry
 
@@ -68,3 +68,29 @@ class Precision:
             self.stats["line_cleared"] = len(original - retained)
             workers = self.scheduler.repack(retained, workers)
         return workers, None if outside or protected & self.query_bit else queries
+
+    def short_certificate(self, text):
+        """Only clear the whole short cohort for a body-only, local change."""
+        if self.index is None:
+            return False
+        changes = footprint(self.impact, text)
+        if changes is None:
+            return False
+        if not self.index.mask("!import_lines"):
+            return False
+        return not any(range_mask(self.index.mask, "IL", path, body | anchors | control)
+                       for path, sites in changes.items() for _, _, (body, anchors, control) in sites)
+
+    def local_plan(self, text):
+        """Use a complete line trace first when a small local body has direct observers."""
+        if self.index is None:
+            return None
+        changes = footprint(self.impact, text)
+        if changes is None or any(anchors for sites in changes.values() for _, _, (_, anchors, _) in sites):
+            return None
+        _, changed, _, control, branch, _, _ = evidence(self.index, changes)
+        mask = (changed | control | branch) | self.protected(changes)
+        if mask.bit_count() > 128:
+            return None
+        self.stats["direct_body"] = mask.bit_count()
+        return mask

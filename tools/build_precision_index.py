@@ -68,6 +68,8 @@ def observations(directory, profile, replay, root):
                 else:
                     suffix = path
                 rows[f"{kind}:{suffix}"] |= context
+                if kind == "L" and (parent == "*" or parent in owners and "::" not in parent):
+                    rows[f"IL:{suffix}"] |= context
                 if kind in ("L", "F"):
                     if query_bit:
                         rows[f"Q{kind}:{suffix}"] |= query_bit
@@ -76,6 +78,7 @@ def observations(directory, profile, replay, root):
     if not set(ids) <= set(sessions) or len(sessions) != len(set(sessions)) or indexed != queries.keys():
         raise ValueError(f"Incomplete trace. Tests {len(sessions)}, query cases {len(indexed)}")
     rows["!ready"] = full
+    rows["!import_lines"] = 1
     print("precision trace", len(sessions), "tests", len(indexed), "queries",
           dict(Counter(key.partition(":")[0] for key in rows)), flush=True)
     return rows, (len(ids) + 7) // 8
