@@ -7,6 +7,7 @@ from dependencies import name_bits
 from impact import UnknownChange, patched, split_diff, syntax
 from precision_index import PrecisionIndex
 from receiver_edits import classes, plain_method
+from refine import changed_fields
 from risk_features import member_change
 
 
@@ -88,6 +89,12 @@ class Recovery:
                 readers = self.removed_method(path, after, owner, member)
                 if readers is not None:
                     return readers, True
+        if len(edits) == 1:
+            owner, member, kind = edit = edits[0]
+            if kind == "assignment" and edit in previous and edit in current:
+                readers = self.literal_attribute(path, after, owner, member)
+                if readers is not None:
+                    return readers, True
         details = self.impact.details
         module = path.removesuffix(".py").replace("/", ".")
         observed = 0
@@ -138,9 +145,48 @@ class Recovery:
         method = next((node for node in cls.body if getattr(node, "name", None) == name), None)
         if method is None or not inert_definition(before, method):
             return None
+        return self.imports.mask(f"call:{path}:{owner}.{name}") | self.member_readers(path, tag, owner, name)
+
+    def literal_attribute(self, path, after, owner, name):
+        """Select readers of a same-type constant in a plain class."""
+        if not owner or name.startswith("_") or not self.imports.mask("!attr_references"):
+            return None
+        module = path.removesuffix(".py").replace("/", ".")
+        tag = f"{module}:{owner}"
+        if not self.receivers.bits("plain:" + tag):
+            return None
+        before_source = self.impact.base(path)[0]
+        # changed_fields checks the complete tree, including method bodies.
+        before_tree = syntax(path, before_source)[0]
+        if changed_fields(before_source, ast.unparse(after)) != [(owner, name)]:
+            return None
+
+        def literal(tree):
+            cls = dict(classes(tree.body)).get(owner)
+            if cls is None:
+                return None
+            # An unqualified class-body read can copy the value into another
+            # attribute without executing a named member lookup.
+            if any(isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
+                   for node in ast.walk(cls)):
+                return None
+            for item in cls.body:
+                targets = item.targets if isinstance(item, ast.Assign) else (
+                    (item.target,) if isinstance(item, ast.AnnAssign) else ())
+                if len(targets) == 1 and isinstance(targets[0], ast.Name) and targets[0].id == name:
+                    value = item.value
+                    if isinstance(value, ast.Constant) and type(value.value) in (bool, str, int, float, type(None)):
+                        return value
+            return None
+
+        before, changed = literal(before_tree), literal(after)
+        if before is None or changed is None or type(before.value) is not type(changed.value):
+            return None
+        return self.member_readers(path, tag, owner, name)
+
+    def member_readers(self, path, tag, owner, name):
         details = self.impact.details
-        return (self.imports.mask(f"call:{path}:{owner}.{name}") |
-                self.imports.mask("attr:" + name) |
+        return (self.imports.mask("attr:" + name) |
                 self.receivers.bits(f"r:{tag}:{name}") | self.receivers.bits(f"r:{tag}:*") |
                 details.access.seen.get(f"field:{path}:{owner}:{name}", 0) |
                 details.flow.opaque | getattr(details.flow, "reflect", 0) |
