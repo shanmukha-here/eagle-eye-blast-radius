@@ -56,6 +56,7 @@ class Replay:
         self.relevant = None
         self.last_seconds = 0.0
         self.last_mismatch = None
+        self.graph_changed = False
 
     def select(self, path, source, key, old, new, mask, scheduler):
         if (not mask & self.test or scheduler is None
@@ -75,7 +76,8 @@ class Replay:
         # Check cheap optimizer postconditions first. A changed result requires
         # executing the original query and comparing its complete table.
         queries = [[*self.cases[i], False] for i in opt] + [[*self.cases[i], True] for i in whole]
-        payload = json.dumps([path, source, queries]).encode()
+        compare_graphs_only = path.startswith("sqlglot/optimizer/") and not whole
+        payload = json.dumps([path, source, queries, compare_graphs_only]).encode()
         timeout = min(7, benefit / 2)
         if self.reserved_seconds + timeout > 60:
             return mask
@@ -93,6 +95,7 @@ class Replay:
             if check.returncode == 0:
                 return reduced
             witness = check.stdout.strip()
+            self.graph_changed = witness == b"graph"
             if len(witness) == 64 and all(c in b"0123456789abcdef" for c in witness):
                 self.last_mismatch = witness.decode("ascii")
         except (OSError, subprocess.TimeoutExpired):
@@ -103,7 +106,7 @@ class Replay:
 
 
 def verify(root):
-    path, modified, checks = json.load(sys.stdin)
+    path, modified, checks, compare_graphs_only = json.load(sys.stdin)
     module = path[:-3].replace("/", ".")
     sys.meta_path.insert(0, PatchedModule(module, str(root / path), modified))
     sys.path.insert(0, str(root))
@@ -125,6 +128,9 @@ def verify(root):
             result = optimize(*args, **kwargs)
             if digest(args[0], result) == opt_reference:
                 continue
+            if compare_graphs_only:
+                print("graph")
+                return False
             args, kwargs, names = pickle.loads(raw)
         observed_names = [t.name for t in find_tables(args[0])]
         if set(observed_names) != set(names):

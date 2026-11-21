@@ -199,6 +199,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     legacy = incumbent.details.replay
                     legacy.last_seconds = 0.0
                     legacy.last_mismatch = None
+                    legacy.graph_changed = False
                     # An empty emitted plan is its own intersection.
                     if scheduler.schedule(mask) != "[]":
                         parser = impact.details.miniatures.tests.get("parser", 0)
@@ -210,7 +211,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         before = incumbent.select(text)
                     plan = gate.apply(text, scheduler.intersect(before, mask, keep), workspace,
                                       legacy.last_seconds, legacy.last_mismatch,
-                                      lambda: replay_body(impact, text))
+                                      lambda: replay_body(impact, text), legacy.graph_changed)
         except UnicodeError:
             plan = scheduler.intersect(impact.full, impact.full)
         workers = json.dumps(plan, separators=(",", ":"))

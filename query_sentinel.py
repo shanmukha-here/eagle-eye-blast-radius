@@ -46,11 +46,13 @@ def build():
             observed.add(code.co_filename[len(package_root):])
 
     monitor.use_tool_id(tid, "TPC-DS parse and serialization coverage")
-    monitor.register_callback(tid, monitor.events.PY_START, record)
+    events = monitor.events.PY_START | monitor.events.PY_RESUME
+    for event in (monitor.events.PY_START, monitor.events.PY_RESUME):
+        monitor.register_callback(tid, event, record)
     rows, snapshots = [], {}
     try:
         for i, (meta, sql, _) in enumerate(inputs()):
-            monitor.set_events(tid, monitor.events.PY_START)
+            monitor.set_events(tid, events)
             tree, parsed, duck = sql_boundary(sql)
             monitor.set_events(tid, 0)
             execute = bool(meta.get("execute"))

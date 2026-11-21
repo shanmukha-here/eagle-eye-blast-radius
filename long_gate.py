@@ -72,7 +72,8 @@ class LongGate:
                        or path == "sqlglot/generator.py" for path in edits)
         return not any(path.startswith("sqlglot/executor/") or path == "sqlglot/serde.py" for path in edits)
 
-    def apply(self, text, workers, workspace=None, earlier=0.0, first=None, reuse=None):
+    def apply(self, text, workers, workspace=None, earlier=0.0, first=None, reuse=None,
+              graph_changed=False):
         if self.available < 0.25:
             return workers
         run = {n for group in workers for n in group}
@@ -99,6 +100,10 @@ class LongGate:
         # The full TPC-DS witness must walk every executable query even on
         # an unchanged tree. Subsecond windows cannot certify that workload.
         if targets[0][1] == "tpcds" and earlier:
+            # A changed optimizer graph requires complete result comparisons.
+            # Do not retry that expensive witness after the screening replay.
+            if graph_changed:
+                return workers
             cap = min(cap, 4.0 - earlier)
         minimum = 1.35 if targets[0][1] == "tpcds" else 0.25
         if cap < minimum:
