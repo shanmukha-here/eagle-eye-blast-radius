@@ -128,10 +128,10 @@ class Surface:
                 return None
             details = self.impact.details
             readers = self.impact.files.get(path, {}).get(0)
-            file_effects = (readers or 0) | (self.mask("file:" + path) or 0) | self.references.get(path, 0)
+            file_effects = (readers or 0) | (self.mask("file:" + path) or 0)
             opaque = details.flow.opaque
             if path.startswith("tests/fixtures/") and path.endswith(".sql") and readers:
-                return file_effects | opaque
+                return file_effects | opaque | self.references.get(path, 0)
             if not path.startswith("sqlglot/") or not path.endswith(".py") or path.endswith("/__init__.py"):
                 return None
             if path not in details.lines:
@@ -166,7 +166,7 @@ class Surface:
         if (self.source_layout is not None and ("@(" in original or "@(" in modified)
                 and identity_layout(original, modified)):
             return (self.impact.details.positions | self.impact.details.flow.opaque |
-                    self.impact.files.get(path, {}).get(0, 0) | self.references.get(path, 0) | self.source_layout)
+                    self.impact.files.get(path, {}).get(0, 0) | self.source_layout)
         if not equivalent(path, original, modified, old, new, access.names if access else b""):
             return None
         return (self.impact.details.positions | self.impact.details.flow.opaque |
