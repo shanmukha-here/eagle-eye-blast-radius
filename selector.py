@@ -343,6 +343,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     precision.stats["recovery_replaces"] = True
                     emit(path, plan, beginning, risk_text, verified=True)
                     continue
+                if recovered is not None and recovered[0] == impact.full:
+                    # Definition recovery will add every test after the
+                    # intersection. Go directly to that plan and its proofs.
+                    emit(path, [], beginning, risk_text)
+                    continue
                 direct = observation.edit(text) if metadata is None else ("metadata", metadata)
                 local = precision.local_plan(text) if not direct else None
                 if local is not None:
