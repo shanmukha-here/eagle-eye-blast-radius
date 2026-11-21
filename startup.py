@@ -128,4 +128,4 @@ class Startup:
                     readers |= bits
         mask = (readers | self.bits.get("registry:all", 0) | self.bits.get("registry:member:" + member, 0)
                 | self.bits.get("registry:key:" + old, 0) | self.bits.get("registry:key:" + new, 0))
-        return mask, member == "DIALECT" and old == "" and not fields
+        return mask, member == "DIALECT" and old == ""

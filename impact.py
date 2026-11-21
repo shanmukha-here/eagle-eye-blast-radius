@@ -227,9 +227,9 @@ class Impact:
                 if registration is not None and self.details.import_valid(path, modified):
                     mask, default_key_only = registration
                     selected = self.check_startup(mask | rows.get(0, 0) | flow.opaque)
-                    if default_key_only:
+                    if default_key_only and not (mask | rows.get(0, 0) | flow.opaque) & self.details.miniatures.tests.get("parser", 0):
                         # get_or_raise(None) constructs the base class directly.
-                        # Only its registry key changed. Verify the default parses cold.
+                        # Require no traced reads of any affected derived field, then verify cold.
                         return self.details.miniatures.check(selected, self.scheduler, "parser", path, modified)
                     return selected
             if flow and single and flow.equality(path, ast.parse(source), ast.parse(modified)):
@@ -294,6 +294,17 @@ class Impact:
             key = affected[0]
             selected = miniature.select(selected, getattr(self, "scheduler", None), path, modified,
                                         key, scopes[key], new_scopes[key], readers)
+        # Executor code runs in child workers during the suite. An early return
+        # that bypasses a result constructor can disrupt their shared lifetime.
+        if miniature and path.startswith("sqlglot/executor/"):
+            for key in affected:
+                previous = [n for n in ast.walk(scopes[key][3]) if isinstance(n, ast.Return)]
+                current = [n for n in ast.walk(new_scopes[key][3]) if isinstance(n, ast.Return)]
+                if len(previous) == len(current) and any(
+                    isinstance(a.value, ast.Call) and isinstance(b.value, ast.Constant)
+                    and b.value.value is None for a, b in zip(previous, current)
+                ):
+                    selected |= miniature.tests.get("parser", 0)
         return selected
 
     def select(self, patch):
