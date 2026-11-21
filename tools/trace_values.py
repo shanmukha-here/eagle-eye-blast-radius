@@ -18,10 +18,11 @@ from types import FunctionType
 
 import pytest
 
-from value_observations import EXPRESSION_FIELDS, SCALARS, inputs, key
+from value_observations import COMPARISONS, EXPRESSION_FIELDS, SCALARS, inputs, key
 
 ROOT = str(Path.cwd()) + "/"
 QUERY_INPUTS = os.getenv("TRACE_QUERY_INPUTS") == "1"
+TYPE_EQUALITY = os.getenv("TRACE_TYPE_EQUALITY") == "1"
 TRACKED = ROOT + ("sqlglot/executor/" if QUERY_INPUTS else "sqlglot/")
 original_load = SourceFileLoader.get_code
 original_exec = SourceFileLoader.exec_module
@@ -70,7 +71,23 @@ class Trace(ast.NodeTransformer):
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
+    def visit_Compare(self, node):
+        if not TYPE_EQUALITY:
+            return self.generic_visit(node)
+        self.generic_visit(node)
+        if len(node.ops) != 1 or type(node.ops[0]) not in (ast.Is, ast.IsNot, ast.Eq, ast.NotEq):
+            return node
+        operands = (node.left, node.comparators[0])
+        if not any(isinstance(x, ast.Attribute) and x.attr[:1].isupper() for x in operands):
+            return node
+        func = ast.Name(id="_observe_clean_identity_compare", ctx=ast.Load())
+        args = [ast.Constant(key(self.filename, node) + ":identity"),
+                ast.Constant(type(node.ops[0]).__name__), *operands]
+        return ast.copy_location(ast.Call(func=func, args=args, keywords=[]), node)
+
     def generic_visit(self, node):
+        if TYPE_EQUALITY:
+            return super().generic_visit(node)
         field = EXPRESSION_FIELDS.get(type(node))
         if not field or not isinstance(self.owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return super().generic_visit(node)
@@ -84,6 +101,18 @@ class Trace(ast.NodeTransformer):
             new = ast.BoolOp(op=ast.Or(), values=[ast.copy_location(call, expr), getattr(node, field)])
             setattr(node, field, ast.copy_location(new, expr))
         return node
+
+
+EVALUATE_COMPARE = {kind.__name__: COMPARISONS[kind]
+                    for kind in (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)}
+
+
+def observe_identity(site, op, left, right):
+    safe = (type(left) is type(right) is type or
+            type(left) in SCALARS and type(right) in SCALARS and
+            (left is right) == (left == right))
+    records[site][current].add((("bool", safe),))
+    return EVALUATE_COMPARE[op](left, right)
 
 
 def observe(site, names):
@@ -185,6 +214,9 @@ def install():
     configured = True
     SourceFileLoader.get_code = get_code
     SourceFileLoader.exec_module = exec_module
+    if TYPE_EQUALITY:
+        builtins._observe_clean_identity_compare = observe_identity
+        return
     builtins._observe_clean_scalar_inputs = observe
     sys.addaudithook(default_audit)
     monitor.use_tool_id(tool, "default-and-scalar-observations")
@@ -194,7 +226,8 @@ def install():
 
 
 def save():
-    monitor.set_events(tool, 0)
+    if not TYPE_EQUALITY:
+        monitor.set_events(tool, 0)
     reported = {site: {owner: list(samples) for owner, samples in owners.items()}
                 for site, owners in records.items()}
     payload = {"pid": os.getpid(), "items": test_names, "values": reported,

@@ -82,6 +82,35 @@ def import_activation(old, new, path, ready):
     return not bound.intersection(runtime_names(old))
 
 
+def identity_changes(old, new):
+    """Allow only swaps between identity and value comparison on the same operands."""
+    original = [node for node in ast.walk(old) if isinstance(node, ast.Compare)]
+    updated = [node for node in ast.walk(new) if isinstance(node, ast.Compare)]
+    if len(original) != len(updated):
+        return []
+    edits = []
+    for before, after in zip(original, updated):
+        if len(before.ops) != 1 or len(after.ops) != 1:
+            continue
+        types = {type(before.ops[0]), type(after.ops[0])}
+        if types in ({ast.Is, ast.Eq}, {ast.IsNot, ast.NotEq}):
+            edits.append((before, after, after.ops))
+    if not edits:
+        return []
+    try:
+        for before, after, _ in edits:
+            after.ops = before.ops
+        return [before for before, _, _ in edits] if ast.dump(old) == ast.dump(new) else []
+    finally:
+        for _, after, ops in edits:
+            after.ops = ops
+
+
+def filtered_fixture(text):
+    # The pinned loader's raw comment filter runs before metadata parsing.
+    return "\n".join(line for line in text.splitlines() if line and not line.startswith("--"))
+
+
 class ObservationIndex:
     def __init__(self, impact, filename):
         self.impact = impact
@@ -90,6 +119,12 @@ class ObservationIndex:
         data = json.loads(zlib.decompress(filename.read_bytes()))
         self.defaults = {key: int(bits, 16) for key, bits in data["defaults"].items()}
         self.values = data["values"]
+        eq = filename.with_name("values_eq.z")
+        self.identities = json.loads(zlib.decompress(eq.read_bytes()))["values"]
+        self.fixtures = {
+            path: int(bits, 16) for path, bits in
+            json.loads(filename.with_name("fixture_inputs.json").read_bytes()).items()
+        }
         self.ready = set(json.loads(filename.with_name("ready_imports.json").read_bytes()))
         self.references = {}
         for key, bits in self.details.references.items():
@@ -112,6 +147,11 @@ class ObservationIndex:
             if len(edits) != 1:
                 return None
             path, hunks = next(iter(edits.items()))
+            if path in self.fixtures:
+                source = (self.base / path).read_text()
+                if filtered_fixture(source) == filtered_fixture(patched(source, hunks)):
+                    return "fixture", self.fixtures[path]
+                return None
             if not path.startswith("sqlglot/") or not path.endswith(".py") or path.endswith("/__init__.py"):
                 return None
             if path not in self.details.lines:
@@ -130,6 +170,22 @@ class ObservationIndex:
                 affected = (external | imports | dialects | self.references.get(path, 0) |
                             self.impact.visitors.get(path, 0))
                 return "syntax", affected
+            comparisons = identity_changes(old, after) if outer == revised_outer else []
+            if comparisons:
+                affected = external
+                for compare in comparisons:
+                    records = self.identities.get(key(path, compare) + ":identity")
+                    if not records:
+                        break
+                    covered = 0
+                    for values, bits in records:
+                        bits = int(bits, 16)
+                        covered |= bits
+                        if values != [["bool", True]]:
+                            affected |= bits
+                    affected |= self.details.lines[path].get(compare.lineno, self.impact.full) & ~covered
+                else:
+                    return "identity", affected
             scalar = replacements(old, after) if outer == revised_outer else []
             if scalar:
                 affected = external
@@ -142,7 +198,6 @@ class ObservationIndex:
                     # coverage has no matching input in this trace.
                     line = self.details.lines[path].get(previous.lineno, self.impact.full)
                     affected |= changed | (line & ~observed)
-                compile(after, path, "exec", dont_inherit=True)
                 return "scalar", affected
 
             if outer == revised_outer:

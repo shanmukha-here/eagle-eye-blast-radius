@@ -8,10 +8,41 @@ import signal
 import sys
 import tempfile
 import time
+import unittest
 from pathlib import Path
 
-from decision import direct, overlay
+from decision import overlay
 from impact import split_diff, UnknownChange
+
+
+class UnitOutcomes(unittest.TestResult):
+    def __init__(self):
+        super().__init__()
+        self.passed = set()
+
+    def addSuccess(self, test):
+        self.passed.add(test.id())
+        super().addSuccess(test)
+
+
+def run_unittests(ids):
+    loader = unittest.TestLoader()
+    test_names = {}
+    tests = unittest.TestSuite()
+    for node in ids:
+        path, *parts = node.split("::")
+        name = ".".join([path[:-3].replace("/", "."), *parts])
+        group = loader.loadTestsFromName(name)
+        if group.countTestCases() != 1:
+            return []
+        test_names[name] = node
+        tests.addTest(group)
+    result = UnitOutcomes()
+    tests.run(result)
+    # Fixture errors can be emitted after otherwise successful methods.
+    if any(not isinstance(test, unittest.TestCase) for test, _ in (*result.errors, *result.skipped)):
+        return []
+    return [test_names[name] for name in result.passed if name in test_names]
 
 
 class Collection:
@@ -31,8 +62,7 @@ def child(send, directory, ids, collect):
         os.chdir(directory)
         sys.path.insert(0, str(directory))
         if not collect:
-            passed, _ = direct(ids)
-            send.send(passed)
+            send.send(run_unittests(ids))
             return
         import pytest
 
@@ -54,7 +84,7 @@ class ExactTests:
         self.nodes = {r["number"]: r["id"] for r in definitions}
         self.numbers = {v: k for k, v in self.nodes.items()}
         self.root = base.resolve()
-        self.ready = set(json.loads(ready.read_bytes()))
+        self.ready = json.loads(ready.read_bytes())
         self.ctx = multiprocessing.get_context("fork")
         self.remaining = min(25.0, count * 0.44)
         self.deadline = time.monotonic() + min(130.0, count * 2.3 + 3.0)
@@ -67,7 +97,7 @@ class ExactTests:
             return plan
         selected = {number for group in plan for number in group}
         weights = self.scheduler.durations
-        if len(selected) > 180 or sum(weights[n] for n in selected) > 600:
+        if len(selected) > 64:
             return plan
         try:
             edits = split_diff(patch)
@@ -76,10 +106,14 @@ class ExactTests:
         except UnknownChange:
             return plan
         # A successful all-pass run can erase at least a worker's startup cost.
-        cap = min(remaining, self.scheduler.cost(plan) / 3000, 0.65)
         names = sorted(self.nodes[n] for n in selected)
-        if not set(names) <= self.ready:
+        if not set(names) <= self.ready.keys():
             return plan
+        fixtures = {node.rsplit("::", 1)[0]: self.ready[node] for node in names}
+        expected = (sum(weights[n] for n in selected) + sum(fixtures.values())) / 1000
+        if expected > 2.55:
+            return plan
+        cap = min(remaining, self.scheduler.cost(plan) / 1300, max(0.46, 1.12 * expected + 0.22))
         result = self.run(edits, names, cap, collect=False)
         if result is not None and all(name in self.numbers for name in result):
             passed = {self.numbers[name] for name in result}
