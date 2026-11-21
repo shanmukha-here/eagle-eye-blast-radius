@@ -4,6 +4,8 @@ import json
 import pickle
 from pathlib import Path
 
+from checkpoint import digest
+
 STORE = Path(__file__).resolve().parent / "tpcds_sql.json"
 
 
@@ -33,14 +35,16 @@ def build():
     rows = []
     for meta, sql, _ in inputs():
         tree, parsed, duck = sql_boundary(sql)
-        rows.append([fingerprint(sql), bool(meta.get("execute")), parsed, duck,
-                     optimized_sql(tree) if meta.get("execute") else None])
+        execute = bool(meta.get("execute"))
+        key = digest(tree) if execute else None
+        rows.append([fingerprint(sql), execute, parsed, duck,
+                     optimized_sql(tree) if execute else None, key])
     if sum(r[1] for r in rows) != 57:
         raise ValueError("incomplete TPC-DS fixture")
     STORE.write_text(json.dumps(rows))
 
 
-def check():
+def check(first=None):
     from contextlib import ExitStack
     from tests.helpers import TPCDS_SCHEMA
 
@@ -48,8 +52,10 @@ def check():
     expected = json.loads(STORE.read_bytes())
     case = None
     with ExitStack() as cleanup:
-        for i, ((meta, sql, _), (source, execute_query, parsed, duck, optimized)) in enumerate(
-                zip(pairs, expected, strict=True)):
+        rows = list(enumerate(zip(pairs, expected, strict=True)))
+        if first is not None:
+            rows.sort(key=lambda row: row[1][1][-1] != first)
+        for i, ((meta, sql, _), (source, execute_query, parsed, duck, optimized, _)) in rows:
             if fingerprint(sql) != source or bool(meta.get("execute")) != execute_query:
                 return False
             tree, p, d = sql_boundary(sql)

@@ -21,7 +21,7 @@ LONG_TESTS = {
 }
 
 
-def probe(connection, root, targets, edits):
+def probe(connection, root, targets, edits, first):
     os.setsid()
     with open(os.devnull, "w") as sink:
         os.dup2(sink.fileno(), 1)
@@ -36,8 +36,10 @@ def probe(connection, root, targets, edits):
         try:
             if kind == "memory":
                 passed = memory(affected_dialects(edits))
+            elif kind == "tpcds":
+                passed = check(first)
             else:
-                passed = {"tpcds": check, "execute": execute, "optimized": optimized}[kind]()
+                passed = (execute if kind == "execute" else optimized)()
             if passed:
                 connection.send(number)
         except Exception:
@@ -70,7 +72,7 @@ class LongGate:
                        or path == "sqlglot/generator.py" for path in edits)
         return not any(path.startswith("sqlglot/executor/") or path == "sqlglot/serde.py" for path in edits)
 
-    def apply(self, text, workers, workspace=None):
+    def apply(self, text, workers, workspace=None, earlier=0.0, first=None):
         if self.available < 0.25:
             return workers
         run = {n for group in workers for n in group}
@@ -96,6 +98,8 @@ class LongGate:
         cap = min(5.0, self.available, gain * 0.55)
         # The full TPC-DS witness must walk every executable query even on
         # an unchanged tree. Subsecond windows cannot certify that workload.
+        if targets[0][1] == "tpcds" and earlier:
+            cap = min(cap, 4.0 - earlier)
         minimum = 1.35 if targets[0][1] == "tpcds" else 0.25
         if cap < minimum:
             return workers
@@ -107,7 +111,7 @@ class LongGate:
                     recv, send = self.ctx.Pipe(duplex=False)
                     stack.enter_context(recv)
                     stack.enter_context(send)
-                    child = self.ctx.Process(target=probe, args=(send, root, targets, list(edits)))
+                    child = self.ctx.Process(target=probe, args=(send, root, targets, list(edits), first))
                     child.start()
                     send.close()
                     try:

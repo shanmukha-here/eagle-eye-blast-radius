@@ -6,6 +6,7 @@ import os
 import pickle
 import subprocess
 import sys
+import time
 import zlib
 from pathlib import Path
 
@@ -53,6 +54,8 @@ class Replay:
         self.directory = directory
         self.reserved_seconds = 0.0
         self.relevant = None
+        self.last_seconds = 0.0
+        self.last_mismatch = None
 
     def select(self, path, source, key, old, new, mask, scheduler):
         if (not mask & self.test or scheduler is None
@@ -79,17 +82,23 @@ class Replay:
         self.reserved_seconds += timeout
         if self.relevant is not None and not self.relevant(mask, reduced):
             return mask
+        started = time.monotonic()
         try:
             check = subprocess.run(
                 [sys.executable, "-B", str(self.directory / "optimizer_probe.py"), str(self.root)],
-                input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=timeout, check=False,
+                input=payload, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=min(timeout, 4.0), check=False,
                 env=dict(os.environ, PYTHONHASHSEED="0", PYTHONPATH=""),
             )
             if check.returncode == 0:
                 return reduced
+            witness = check.stdout.strip()
+            if len(witness) == 64 and all(c in b"0123456789abcdef" for c in witness):
+                self.last_mismatch = witness.decode("ascii")
         except (OSError, subprocess.TimeoutExpired):
             pass
+        finally:
+            self.last_seconds = time.monotonic() - started
         return mask
 
 
@@ -125,6 +134,7 @@ def verify(root):
                 tables[n] = pickle.loads(zlib.decompress((store / ("table-" + n + ".z")).read_bytes()))
         table = execute(args[0], schema=TPCDS_SCHEMA, tables={n: tables[n] for n in observed_names})
         if table_digest(table) != reference:
+            print(key)
             return False
     return module in sys.modules
 
