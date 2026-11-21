@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 
 from impact import split_diff, patched, UnknownChange
-from miniatures import CORE
 from optimizer_probe import cost
 
 
@@ -83,16 +82,8 @@ def worker(conn, root, inexpensive, checks, paths):
         cleared, good = direct(inexpensive)
         if good:
             for kind, node in checks:
-                if kind == "memory":
-                    from short_probe import memory
-                    ok = memory(affected_dialects(paths))
-                elif kind == "parser":
-                    from parser_probe import exercise
-                    exercise()
-                    ok = True
-                else:
-                    from query_sentinel import check
-                    ok = check()
+                from short_probe import memory
+                ok = memory(affected_dialects(paths))
                 if ok:
                     cleared.append(node)
         conn.send(cleared)
@@ -157,15 +148,19 @@ class Execution:
     def refine(self, patch, mask):
         if not mask or mask == self.full or self.budget < 0.3 or time.monotonic() >= self.deadline:
             return mask
+        # General query and parser children did not recover their CPU charge.
+        # The separate instruction-indexed replay remains active for those paths.
+        if not patch.startswith("diff --git a/sqlglot/generators/"):
+            return mask
         try:
             edits = split_diff(patch)
         except (UnknownChange, ValueError):
             return mask
-        if not edits or any(not p.startswith(("sqlglot/", "tests/fixtures/")) for p in edits):
+        if len(edits) != 1 or not next(iter(edits)).endswith(".py"):
             return mask
         original = [n for n in self.order if mask & (1 << self.names[n])]
         cheap = [n for n in original if self.durations[n] < 3000]
-        cover, sensitive = change_coverage(patch, self.lines)
+        cover, _ = change_coverage(patch, self.lines)
         covered = [n for n in cheap if cover & (1 << self.names[n])]
         total = sum(self.durations[n] for n in cheap)
         if total <= 550 and len(cheap) <= 40:
@@ -175,21 +170,7 @@ class Execution:
             # integrations often exceed the decision-time budget just in setup.
             inexpensive = [n for n in covered if 15 <= self.durations[n] <= 230
                            and n.count("::") == 2 and "test_executor.py" not in n][:3]
-        checks = []
-        if len(edits) == 1:
-            path = next(iter(edits))
-            single = path.startswith("sqlglot/") and path.endswith(".py")
-            for name in original:
-                if name.endswith("::test_generator_memory") and path.startswith("sqlglot/generators/"):
-                    checks.append(("memory", name))
-                elif (name.endswith("::test_max_nodes") and single and path not in CORE and not sensitive
-                      and not path.endswith("/__init__.py") and not path.startswith("sqlglot/executor/")
-                      and path != "sqlglot/dialects/dialect.py"):
-                    checks.append(("parser", name))
-                elif (name.endswith("::test_execute_tpcds") and single and
-                      path.startswith(("sqlglot/parsers/", "sqlglot/optimizer/"))
-                      and not path.endswith("/__init__.py")):
-                    checks.append(("tpcds", name))
+        checks = [("memory", n) for n in original if n.endswith("::test_generator_memory")]
         if checks and len(cheap) > 40 and inexpensive:
             # A genuinely cheap covering witness leaves time for the long workload.
             candidates = [n for n in reversed(covered) if n.count("::") == 2]
@@ -205,8 +186,7 @@ class Execution:
             return mask
         # Repacking can leave the same long test on the critical worker even
         # after many cheap tests pass. Skip work whenever it cannot pay for itself.
-        horizon = 6.0 if any(kind == "tpcds" for kind, _ in checks) else (2.5 if checks else 1.1)
-        cap = min(self.budget, self.deadline-time.monotonic(), gain * 0.8, horizon)
+        cap = min(self.budget, self.deadline-time.monotonic(), gain * 0.8, 2.5)
         if cap < 0.3:
             return mask
         started = time.monotonic()

@@ -119,5 +119,6 @@ method resolution order when scalar settings are inherited. Reading the names in
 a class dictionary through the builtin dir does not read their values. A separate
 clean unittest trace records which tests consume fixture lists created by class
 setup. That trace applies only when all input statements and the number of paired
-fixture fields are preserved. The bounded executor is reserved for wide selections
-with enough removable worker time to pay for its work.
+fixture fields are preserved. The generic covering-test executor runs only for wide generator changes with a
+memory check and enough removable worker time to pay for the child. Other long
+tests use the specialized bytecode and query replays.

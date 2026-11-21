@@ -19,7 +19,5 @@ RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python /build_replays.py /app/replay_
 COPY requirements.lock /app/requirements.lock
 RUN python -m pip install --disable-pip-version-check --no-cache-dir --no-deps --index-url https://pypi.org/simple --only-binary=:all: -r /app/requirements.lock
 ENV SKIP_INTEGRATION=0 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHON_CPU_COUNT=2
-COPY query_sentinel.py ./
-RUN PYTHONPATH=/app:/base PYTHONHASHSEED=0 python query_sentinel.py
 COPY decision.py selector.py narrow.py fixture_reads.json ./
 CMD ["python", "/app/selector.py"]
