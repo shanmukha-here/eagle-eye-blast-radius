@@ -5,7 +5,9 @@ DIFF = re.compile(r"^diff --git a/(\S+) b/(\S+)$", re.MULTILINE)
 
 
 def hard_topology(patch):
-    # Clean importers alone miss imports warmed before the test began.
+    # Clean importers are incomplete when an earlier import warmed the module
+    # cache. Deletions and renames need the entire set until cold collection
+    # and the transitive dependency graph can certify a smaller one.
     if re.search(r"^(?:deleted file mode |rename (?:from|to) |\+\+\+ /dev/null$)",
                  patch, re.MULTILINE):
         return True

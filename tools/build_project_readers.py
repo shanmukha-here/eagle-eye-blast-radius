@@ -1,7 +1,5 @@
 """Index clean source files that reference checkout metadata."""
 import ast
-from collections import defaultdict
-from importlib.util import resolve_name
 import json
 from pathlib import Path
 import sys
@@ -15,46 +13,6 @@ def load(path):
     return json.loads(zlib.decompress(path.read_bytes()))
 
 
-def importer_masks(trees, tests):
-    modules = {path[:-3].replace("/", ".").removesuffix(".__init__"): path for path in trees}
-    names = {name.casefold(): name for name in modules}
-    reverse = defaultdict(set)
-    for module, path in modules.items():
-        package = module if path.endswith("/__init__.py") else module.rpartition(".")[0]
-        targets = {package}
-        for node in ast.walk(trees[path]):
-            if isinstance(node, ast.Import):
-                targets.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                name = node.module or ""
-                if node.level:
-                    name = resolve_name("." * node.level + name, package)
-                targets.add(name)
-                targets.update(name + "." + alias.name for alias in node.names if alias.name != "*")
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if node.value.startswith(("sqlglot.", "tests.")):
-                    targets.add(node.value)
-        for target in targets:
-            parts = target.split(".")
-            for index in range(1, len(parts) + 1):
-                name = names.get(".".join(parts[:index]).casefold())
-                if name is not None and name != module:
-                    reverse[modules[name]].add(path)
-    result = {}
-    for path in trees:
-        if not path.startswith("sqlglot/"):
-            continue
-        seen, pending, mask = {path}, [path], 0
-        while pending:
-            source = pending.pop()
-            mask |= tests.get(source, 0)
-            fresh = reverse[source] - seen
-            pending.extend(fresh)
-            seen.update(fresh)
-        result["importers:" + path] = ((None, mask),)
-    return result
-
-
 def main(base, directory):
     paths = set()
     for glob in ("*.md", "docs/**/*.md"):
@@ -66,7 +24,6 @@ def main(base, directory):
                        "find_config_files", "parse_config_files"}
     discovery = set()
     introspection = {}
-    trees = {}
     metadata_reads = {"__annotations__", "__doc__", "co_consts", "get_annotations",
                       "get_type_hints", "getdoc", "getcomments", "getsource",
                       "signature", "DocTestSuite", "DocTestFinder"}
@@ -74,7 +31,6 @@ def main(base, directory):
         for source in sorted((base / source_dir).rglob("*.py")):
             name = source.relative_to(base).as_posix()
             tree = ast.parse(source.read_bytes(), filename=name)
-            trees[name] = tree
             nodes = list(ast.walk(tree))
             docstrings = {n.body[0].value for n in nodes if isinstance(n, (ast.Module, ast.ClassDef,
                             ast.FunctionDef, ast.AsyncFunctionDef)) and ast.get_docstring(n) is not None}
@@ -123,7 +79,6 @@ def main(base, directory):
     records = {"file:" + p: ((None, readers(paths)),) for p, paths in index.items()}
     records["discover"] = ((None, readers(discovery)),)
     records["introspect"] = ((None, observed),)
-    records.update(importer_masks(trees, details.test_files))
     build(directory / "project_readers.index", records)
 
 
