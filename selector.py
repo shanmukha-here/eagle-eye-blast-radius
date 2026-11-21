@@ -319,6 +319,12 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             if checked != plan:
                 precision.stats["small_clean_cohort"] = sum(map(len, plan))
                 plan = checked
+            if setup_observed:
+                required = set(scheduler.numbers(setup_observed))
+                selected = {n for worker in plan for n in worker}
+                if required - selected:
+                    plan = scheduler.repack(selected | required, plan)
+                    precision.stats["setup_observers"] = len(required - selected)
             if plan:
                 insured = scheduler.insure(plan, insurance_scope(text), verify.passed)
                 if insured is not plan:
@@ -350,6 +356,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         queries.stats = {}
         precision.stats = {}
         long_cases.stats = {}
+        setup_observed = 0
         verify.attempted.clear()
         verify.passed.clear()
         before = mask = impact.full
@@ -385,6 +392,12 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 if addition(text) and metadata is None:
                     emit(path, fallback_plan, beginning)
                     continue
+                if metadata is None:
+                    setup_observed = precision.setup_observers(text)
+                    if setup_observed == impact.full:
+                        precision.stats["collection_fallback"] = True
+                        emit(path, fallback_plan, beginning)
+                        continue
                 risk_text = text
                 recovered = recovery.declarations(text) if metadata is None else None
                 if recovered is not None and recovered[1]:

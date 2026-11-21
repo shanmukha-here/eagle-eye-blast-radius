@@ -87,3 +87,31 @@ def test_nested_scope_short_certificate_checks_import_observations(tmp_path):
     assert precision.short_certificate(diff)
     precision.index = SimpleNamespace(mask={"!import_lines": 1, f"IL:{path}:3": 1}.get)
     assert not precision.short_certificate(diff)
+
+
+def test_setup_observers_keep_reads_from_changed_callable_bodies(tmp_path):
+    import difflib
+    from types import SimpleNamespace
+
+    from impact import Impact
+    from precision import Precision
+
+    path = "sqlglot/demo.py"
+    before = "class Header:\n    setting = False\n\ndef make(enabled=False):\n    return 1\n"
+    file = tmp_path / path
+    file.parent.mkdir()
+    file.write_text(before)
+
+    def patch(after):
+        return f"diff --git a/{path} b/{path}\n" + "".join(difflib.unified_diff(
+            before.splitlines(True), after.splitlines(True), fromfile="a/" + path, tofile="b/" + path,
+        ))
+
+    precision = object.__new__(Precision)
+    precision.impact = Impact(tmp_path, {"ids": [], "files": {}, "visitors": {}})
+    evidence = {"!import_lines": 1, f"IL:{path}:2": 7, f"IL:{path}:4": 3, f"IL:{path}:5": 6}
+    precision.index = SimpleNamespace(mask=lambda key: evidence.get(key, 0))
+    assert precision.setup_observers(patch(before.replace("return 1", "return 2"))) == 6
+    assert precision.setup_observers(patch(before.replace("setting = False", "setting = True"))) == 0
+    assert precision.setup_observers(patch(before.replace("enabled=False", "enabled=True"))) == 3
+    assert precision.setup_observers(patch(before.replace("return 1", "return 1  # text"))) == 0

@@ -4,6 +4,7 @@ import re
 
 from impact import UnknownChange, patched, split_diff, syntax
 from miniatures import CORE
+from narrow import literal_defaults
 from precision_body import evidence, footprint, range_mask
 from precision_index import PrecisionIndex
 from registry_keys import one_entry
@@ -126,6 +127,32 @@ class Precision:
             return self.short_body_outside_imports(text)
         return not any(range_mask(self.index.mask, "IL", path, body | anchors | control)
                        for path, sites in changes.items() for _, _, (body, anchors, control) in sites)
+
+    def setup_observers(self, text):
+        """Keep readers in module setup and collection outside replayed test bodies."""
+        if self.index is None or not self.index.mask("!import_lines"):
+            return 0
+        observed = 0
+        try:
+            for path, hunks in split_diff(text).items():
+                if not path.startswith("sqlglot/") or not path.endswith(".py"):
+                    continue
+                lines, _, _ = edit_lines(hunks)
+                readers = 0
+                for line in lines:
+                    readers |= self.index.mask(f"IL:{path}:{line}")
+                if not readers:
+                    continue
+                source, (outer, scopes), _ = self.impact.base(path)
+                modified = patched(source, hunks)
+                _, (revised, changes), _ = syntax(path, modified)
+                body_edit = (outer == revised and scopes.keys() == changes.keys()
+                             and any(scopes[site][2] != changes[site][2] for site in scopes))
+                if body_edit or outer != revised and literal_defaults(source, modified):
+                    observed |= readers
+        except (OSError, SyntaxError, UnicodeError, UnknownChange, ValueError, RecursionError):
+            return observed
+        return observed
 
     def short_body_outside_imports(self, text):
         """Use the import trace for nested function bodies as well."""
