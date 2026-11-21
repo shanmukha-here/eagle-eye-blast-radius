@@ -31,6 +31,7 @@ from reference_replay import ReferenceReplay
 from long_gate import LongGate
 from tpcds_replay import QueryGate
 from receiver_edits import ReceiverEdits
+from registry_guard import changes_routing
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details, bindings
 
@@ -240,7 +241,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 plan = scheduler.intersect(before, mask)
             else:
                 text = path.read_bytes().decode("utf-8")
-                if hard_topology(text) or opaque_format(text):
+                if hard_topology(text) or opaque_format(text) or changes_routing(impact, text):
                     emit(path, scheduler.intersect(before, mask), beginning)
                     continue
                 metadata = surface.select(text)
@@ -278,11 +279,14 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         before = incumbent.select(text)
                     plan = scheduler.intersect(before, mask, keep)
                     if before == mask == impact.full:
-                        declaration = receivers.select(text)
+                        declaration = surface.select(text, fast=False)
+                        if declaration is None:
+                            declaration = receivers.select(text)
+                            if declaration is not None:
+                                queries.stats["receiver_declaration"] = True
                         if declaration is not None:
                             before = mask = declaration | keep
                             plan = json.loads(scheduler.schedule(mask, pad=False))
-                            queries.stats["receiver_declaration"] = True
                     # Padding that did not change the initial schedule cost is
                     # not an observation. Replaying those IDs can load unrelated
                     # class fixtures and make a cheap cohort expensive.

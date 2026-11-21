@@ -47,7 +47,8 @@ class QueryGate:
         if len(edits) != 1:
             return None
         path, hunks = next(iter(edits.items()))
-        if (not path.startswith(("sqlglot/optimizer/", "sqlglot/executor/"))
+        if (not (path.startswith(("sqlglot/optimizer/", "sqlglot/executor/"))
+                 or path in ("sqlglot/planner.py", "sqlglot/schema.py"))
                 or path.endswith("/__init__.py") or self.index.get("boundary:" + path)):
             return None
         original, (outer, scopes), code = self.impact.base(path)

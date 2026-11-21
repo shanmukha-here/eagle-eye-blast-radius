@@ -30,6 +30,7 @@ COPY tpcds_replay.py ./
 COPY tools/build_query_gate.py /build_query_gate.py
 RUN PYTHONPATH=/app python /build_query_gate.py /app
 COPY receiver_edits.py receiver.index ./
+COPY registry_guard.py ./
 COPY observation_index.py value_observations.py values.z values_eq.z ready_imports.json fixture_inputs.json ./
 COPY tools/build_observation_file.py /build_observation_file.py
 RUN PYTHONPATH=/app python /build_observation_file.py /app

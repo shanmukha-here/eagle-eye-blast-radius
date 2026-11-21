@@ -67,3 +67,4 @@ tools/*
 !tools/build_query_gate.py
 !receiver_edits.py
 !receiver.index
+!registry_guard.py

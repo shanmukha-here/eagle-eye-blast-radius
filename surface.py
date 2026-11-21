@@ -92,7 +92,7 @@ class Surface:
                          access.seen.get("path:" + basename, 0))
         return observed | access.seen.get("dir:?", 0) | access.seen.get("dir:sqlglot", 0)
 
-    def select(self, text):
+    def select(self, text, *, fast=True):
         if self.index is None or text.count("\ndiff --git ") or not text.startswith("diff --git "):
             return None
         try:
@@ -102,7 +102,7 @@ class Surface:
             path, = edits
             projected = self.mask("file:" + path)
             if projected is None:
-                return self.definition(path, edits[path], text)
+                return self.definition(path, edits[path], text if fast else None)
             original = (self.impact.root / path).read_text()
             modified = patched(original, edits[path])
             if path in ("setup.cfg", "pyproject.toml") and not build_configuration(path, original, modified):
@@ -118,10 +118,11 @@ class Surface:
         if not path.startswith("sqlglot/") or not path.endswith(".py"):
             return None
         # Guard the additional AST walk on the changed lines alone.
-        signs = [line[1:].lstrip() for line in raw.splitlines()
-                 if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
-        if not any(line.startswith(("'", '"', "@", "from ")) or " -> " in line for line in signs):
-            return None
+        if raw is not None:
+            signs = [line[1:].lstrip() for line in raw.splitlines()
+                     if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))]
+            if not any(line.startswith(("'", '"', "@", "from ")) or " -> " in line for line in signs):
+                return None
         original = (self.impact.root / path).read_text()
         modified = patched(original, hunks)
         old, (outer, scopes), _ = syntax(path, original)
