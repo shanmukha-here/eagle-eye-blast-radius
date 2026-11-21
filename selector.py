@@ -252,6 +252,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     precision = Precision(map_path.parent, impact, scheduler, queries.test)
     risk = RiskPolicy(map_path.parent, impact, precision, scheduler, tests)
     recovery = Recovery(map_path.parent, impact, receivers)
+    # Exclude the declaration recovery union for this diagnostic.
+    recovery.declarations = lambda _: None
     fallback_plan = scheduler.intersect(impact.full, impact.full)
     report = os.environ.get("BLAST_ASSERTION_REPORT") == "1"
 
