@@ -1,4 +1,5 @@
 """Schedule numbered tests using the impact map of the pinned source tree."""
+import ast
 import json
 import math
 import sys
@@ -16,10 +17,10 @@ from decision import Execution
 from flow import Flow
 from observed import Observers
 from optimizer_probe import Replay
-from miniatures import Miniatures
+from miniatures import CORE, Miniatures
 from startup import Startup
 from narrow import Narrow
-from impact import Impact
+from impact import Impact, UnknownChange, patched, split_diff, structure
 from refine import Details
 
 
@@ -97,6 +98,24 @@ class Scheduler:
         return min(variants, key=self.cost)
 
 
+def changes_shared_grammar(impact, text):
+    if not any(f"diff --git a/{path} " in text for path in CORE):
+        return False
+    try:
+        for path, hunks in split_diff(text).items():
+            if path not in CORE:
+                continue
+            source, (outer, scopes), _ = impact.base(path)
+            new_outer, changed = structure(ast.parse(patched(source, hunks)))
+            if outer != new_outer or scopes.keys() != changed.keys():
+                return True
+            if any(len(key) > 2 and scopes[key][2] != changed[key][2] for key in scopes):
+                return True
+    except (UnknownChange, OSError, SyntaxError, UnicodeError, ValueError, RecursionError):
+        return True
+    return False
+
+
 def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_name("base.z")):
     tests = json.loads((data / "tests.json").read_bytes())["tests"]
     profile = json.loads(zlib.decompress(map_path.read_bytes()))
@@ -133,9 +152,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 mask = execution.refine(text, narrow.select(text, impact.select(text)))
                 # The incumbent lacks the full-width safeguard for core grammar
                 # edits. Keep that safeguard when the newer selector requires it.
-                if text.startswith(("diff --git a/sqlglot/parser.py ", "diff --git a/sqlglot/tokens.py ",
-                                    "diff --git a/sqlglot/tokenizer_core.py ")):
-                    keep = impact.details.miniatures.tests.get("parser", 0) & mask
+                parser = impact.details.miniatures.tests.get("parser", 0)
+                if mask & ~before & parser and changes_shared_grammar(impact, text):
+                    keep = parser
             except UnicodeError:
                 pass
         workers = json.dumps(scheduler.intersect(before, mask, keep), separators=(",", ":"))
