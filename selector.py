@@ -214,6 +214,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                            startup=2 * len(plan),
                            busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
                            **assertions.stats)
+            for key in ("candidate_units", "replayed_units", "dropped_tests"):
+                metrics.setdefault(key, 0)
             print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')

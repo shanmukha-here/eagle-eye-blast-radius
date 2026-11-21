@@ -221,6 +221,8 @@ def evaluate(config, confdir, archive, work, sha):
         "-e",
         "HOME=/tmp",
     ]
+    if config.get("assertion_report", False):
+        flags += ["-e", "BLAST_ASSERTION_REPORT=1"]
     control = prefix + "-control"
     results = {}
     print(f"Frozen commit {sha}, image {iid}", flush=True)

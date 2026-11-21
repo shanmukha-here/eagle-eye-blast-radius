@@ -6,6 +6,7 @@ import json
 import marshal
 from pathlib import Path
 import sys
+import zlib
 
 from assertion_index import ELIGIBLE, HEADER, KEY, MAGIC, REPLAYABLE, UNIT
 
@@ -17,6 +18,18 @@ def main(trace, output):
     code = report["code"]
     opaque = report["opaque"]
     table = defaultdict(list)
+    query_sites = defaultdict(set)
+    tpcds = output.with_name("tpcds_sql.json")
+    executor_map = output.with_name("replay_index.z")
+    if tpcds.exists() and executor_map.exists():
+        query_rows = json.loads(tpcds.read_bytes())["rows"]
+        executor = json.loads(zlib.decompress(executor_map.read_bytes()))
+        cases = [row[0] for row in executor["cases"]]
+        for site, (optimize, execute) in executor["uses"].items():
+            for i in set(optimize) | set(execute):
+                query_sites[cases[i]].add("c:" + site)
+    else:
+        query_rows = []
     scopes = {(path, qual): line for path, line, qual in code if line >= 0}
     for ident in report.get("startup", []):
         path, line, qual = code[ident]
@@ -52,6 +65,15 @@ def main(trace, output):
             dump = base64.b85decode(payload)
             unit = marshal.loads(dump)
             flags = ELIGIBLE if name not in opaque and name not in hazardous else 0
+            query_key = None
+            if query_rows and name.endswith("::test_execute_tpcds") and unit and unit[0] == "subtest":
+                args = unit[1]
+                if len(args) == 1 and isinstance(args[0], str) and args[0].startswith("tpc-ds "):
+                    slot = int(args[0].removeprefix("tpc-ds ")) - 1
+                    query_key = query_rows[slot][-1]
+                    if query_key is not None:
+                        unit = ("query", slot, query_key)
+                        dump = marshal.dumps(unit)
             if flags and unit and unit[0] in ("helper", "direct") and not hazards:
                 flags |= REPLAYABLE
             counts["units"] += 1
@@ -63,6 +85,9 @@ def main(trace, output):
             index = len(units) // UNIT.size
             units.extend(UNIT.pack(*name_ref(name), *store(dump), flags))
             table["t:" + name].append(index)
+            for key in query_sites.get(query_key, ()):
+                table[key].append(index)
+                table["m:" + key.split(":", 2)[1]].append(index)
             visited = set()
             for ident in identifiers:
                 path, line, qual = code[ident]
