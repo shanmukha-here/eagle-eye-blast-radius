@@ -52,6 +52,22 @@ def ratios(path):
     return [statistics.median(v) if v else None for v in values]
 
 
+def matched_ratio(path):
+    pairs = []
+    reading = False
+    for line in path.read_text().splitlines():
+        if line.startswith("| Matched commit |"):
+            reading = True
+            continue
+        if not line.startswith("|"):
+            reading = False
+        if reading:
+            cells = [s.strip() for s in line.strip("|").split("|")]
+            if len(cells) == 4 and all(s.replace(".", "", 1).isdigit() for s in cells[1:3]):
+                pairs.append(Decimal(cells[2]) / Decimal(cells[1]))
+    return statistics.median(pairs) if pairs else None
+
+
 def rounded(value):
     return value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
 
@@ -217,6 +233,11 @@ def evaluate(config, confdir, archive, work, sha):
                 sim = score["simulated_milliseconds"]
                 total = scorer.run_total_microseconds(sim, used)
                 trial_totals.append(total)
+                if label in config.get("record_datasets", []):
+                    import gzip
+                    dest = confdir / "localboard-runs" / sha / label
+                    dest.mkdir(parents=True, exist_ok=True)
+                    (dest / f"{trial}.jsonl.gz").write_bytes(gzip.compress(bytes(stdout), mtime=0))
                 print(
                     f"{label} run={trial} n={len(answers)} sim={sim / 1000:.3f}s cpu={used / 1e6:.6f}s "
                     f"misses={score['misses']} total={total / 1e6:.6f}s wall={elapsed:.3f}s stdout={len(stdout)}B",
@@ -226,7 +247,18 @@ def evaluate(config, confdir, archive, work, sha):
                 Decimal(statistics.median(trial_totals)) / 1_000_000
             )
             print(f"{label} median={results[label]}s", flush=True)
-    public_ratio, blind_ratio = ratios(confdir / config["calibration"])
+    ledger = confdir / config["calibration"]
+    if "proxy" in results:
+        ratio = matched_ratio(ledger)
+        if ratio is None:
+            print("Prediction unavailable until historical proxy replays are calibrated.")
+            return
+        for label, title in (("proxy", "Predicted board"), ("shadow", "Disjoint batch sensitivity")):
+            if label in results:
+                print(f"{title} = {rounded(results[label] * ratio)} s "
+                      f"({label} {results[label]} s x median matched ratio {ratio:.6f})")
+        return
+    public_ratio, blind_ratio = ratios(ledger)
     if public_ratio is None:
         raise ValueError("no completed public calibration pair")
     for label, ratio, title in [

@@ -8,6 +8,8 @@ from functools import lru_cache
 from pathlib import Path
 
 from dependencies import Dependencies
+from flow import Flow
+from optimizer_probe import Replay
 from impact import Impact
 from refine import Details
 
@@ -63,7 +65,10 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     data_map = json.loads(zlib.decompress(map_path.with_name("details.z").read_bytes()))
     access = Dependencies(json.loads(zlib.decompress(map_path.with_name("access.z").read_bytes())))
     impact = Impact(base, profile, Details(data_map, profile["ids"], base, access))
+    impact.details.flow = Flow(json.loads(zlib.decompress(map_path.with_name("flow.z").read_bytes())))
     scheduler = Scheduler(tests, profile["ids"])
+    impact.details.replay = Replay(profile["ids"], base, map_path.parent)
+    impact.scheduler = scheduler
     deadline = time.monotonic() + 145
     for path in sorted((data / "commits").glob("*.patch")):
         mask = impact.full

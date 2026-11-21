@@ -212,7 +212,10 @@ class Impact:
         # Compilation also detects scoping errors that ast.parse alone accepts.
         updated_code = compile(modified, path, "exec", dont_inherit=True)
         updated, new_scopes = structure(ast.parse(modified))
+        flow = getattr(self.details, "flow", None)
         if skeleton != updated or scopes.keys() != new_scopes.keys():
+            if flow and single and flow.equality(path, ast.parse(source), ast.parse(modified)):
+                return rows.get(0, 0) | flow.opaque
             if self.details and single:
                 return self.details.fields(
                     path, source, modified, rows.get(0, 0), self.visitors.get(path, 0)
@@ -228,6 +231,14 @@ class Impact:
                 if self.details
                 else fallback
             )
+        flow_mask = None
+        if flow and single and len(affected) == 1:
+            key = affected[0]
+            if flow.equality(path, scopes[key][3], new_scopes[key][3]):
+                flow_mask = flow.opaque
+            else:
+                uncalled = not any(scopes[key][0] <= line <= scopes[key][1] for line in rows)
+                flow_mask = flow.selection(path, original_code, updated_code, key, scopes[key], new_scopes[key], uncalled)
         selected = readers
         refine = self.details and bindings(original_code) == bindings(updated_code)
         for key in affected:
@@ -238,7 +249,7 @@ class Impact:
             ) != ast.get_docstring(new_scopes[key][3], clean=False):
                 return self.full
             if start not in rows:
-                return self.full
+                return self.full if flow_mask is None else (readers | flow_mask)
             wide = 0
             for first, observed in rows.items():
                 if start <= first <= end:
@@ -248,7 +259,13 @@ class Impact:
                 wide = self.details.statements(path, old_body, new_body, wide)
                 if single and len(affected) == 1:
                     wide = self.details.comparison(path, old_body, new_body, wide)
-            selected |= wide
+            selected |= wide if flow_mask is None else wide & flow_mask
+        replay = getattr(self.details, "replay", None)
+        if (single and len(affected) == 1 and path.startswith("sqlglot/")
+                and replay and not readers & replay.test):
+            key = affected[0]
+            selected = replay.select(path, modified, key, scopes[key], new_scopes[key], selected,
+                                     getattr(self, "scheduler", None))
         return selected
 
     def select(self, patch):

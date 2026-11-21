@@ -8,3 +8,11 @@
 !details.z
 !dependencies.py
 !access.z
+!flow.py
+!flow.z
+!checkpoint.py
+!optimizer_probe.py
+!replay_index.z
+!tools/
+tools/*
+!tools/build_replays.py
