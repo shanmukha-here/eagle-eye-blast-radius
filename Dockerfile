@@ -23,13 +23,7 @@ RUN python -m pip install --disable-pip-version-check --no-cache-dir --no-deps -
 ENV SKIP_INTEGRATION=0 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 PYTHON_CPU_COUNT=2
 COPY query_sentinel.py memo_witness.py ./
 RUN PYTHONHASHSEED=0 PYTHONPATH=/app:/base python query_sentinel.py
-COPY decision.py selector.py narrow.py fixture_reads.json long_gate.py parser_signal.py cpu_budget.py surface.py definition_metadata.py observation_file.py ./
-COPY tools/build_project_readers.py /build_project_readers.py
-RUN PYTHONPATH=/app python /build_project_readers.py /base /app
-COPY observation_index.py value_observations.py values.z values_eq.z ready_imports.json fixture_inputs.json ./
-COPY tools/build_observation_file.py /build_observation_file.py
-RUN PYTHONPATH=/app python /build_observation_file.py /app
-COPY exact_tests.py assertion_index.py assertion_replay.py assertion_units.py module_topology.py ./
+COPY assertion_units.py ./
 COPY tools/trace_assertions.py tools/build_assertion_index.py /assertion-tools/
 RUN mkdir /assertion-trace \
     && cd /base \
@@ -38,6 +32,13 @@ RUN mkdir /assertion-trace \
        python -B -m pytest -q --assert=plain -p no:cacheprovider -p trace_assertions tests \
     && PYTHONPATH=/app python /assertion-tools/build_assertion_index.py /assertion-trace /app/assertions.index \
     && rm -r /assertion-trace
+COPY decision.py selector.py narrow.py fixture_reads.json long_gate.py parser_signal.py cpu_budget.py surface.py definition_metadata.py observation_file.py ./
+COPY tools/build_project_readers.py /build_project_readers.py
+RUN PYTHONPATH=/app python /build_project_readers.py /base /app
+COPY observation_index.py value_observations.py values.z values_eq.z ready_imports.json fixture_inputs.json ./
+COPY tools/build_observation_file.py /build_observation_file.py
+RUN PYTHONPATH=/app python /build_observation_file.py /app
+COPY exact_tests.py assertion_index.py assertion_replay.py module_topology.py ./
 COPY tools/build_unit_ready.py /build_unit_ready.py
 RUN SKIP_INTEGRATION=0 PYTHONPATH=/app:/base python /build_unit_ready.py /app/base.z /app/unit_ready.json /base
 COPY reference_replay.py reference_reads.json ./
