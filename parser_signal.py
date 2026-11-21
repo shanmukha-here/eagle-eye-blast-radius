@@ -14,7 +14,10 @@ def observes_patch(impact, index, parser_bit, text):
             or not index.mask("count:0") or hard_topology(text) or opaque_format(text)):
         return True
     try:
-        for path, hunks in split_diff(text).items():
+        edits = split_diff(text)
+        if len(edits) > 4:
+            return True
+        for path, hunks in edits.items():
             fixture_readers = impact.files.get(path, {}).get(0)
             if path.startswith("tests/fixtures/") and path.endswith(".sql") and fixture_readers is not None:
                 if fixture_readers & parser_bit:
