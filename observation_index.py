@@ -5,6 +5,7 @@ import json
 import zlib
 from functools import lru_cache
 
+from observation_file import ObservationFile
 from impact import patched, split_diff, syntax, UnknownChange
 from refine import changed_fields
 from value_observations import COMPARE_BITS, SCALARS, input_mask, key, replacements
@@ -117,11 +118,14 @@ class ObservationIndex:
         self.impact = impact
         self.details = impact.details
         self.base = impact.root
-        data = json.loads(zlib.decompress(filename.read_bytes()))
-        self.defaults = {key: int(bits, 16) for key, bits in data["defaults"].items()}
-        self.values = data["values"]
-        eq = filename.with_name("values_eq.z")
-        self.identities = json.loads(zlib.decompress(eq.read_bytes()))["values"]
+        index = filename.with_name("values.index")
+        self.index = ObservationFile(index) if index.is_file() else None
+        if self.index is None:
+            data = json.loads(zlib.decompress(filename.read_bytes()))
+            self.defaults = {key: int(bits, 16) for key, bits in data["defaults"].items()}
+            self.values = data["values"]
+            eq = filename.with_name("values_eq.z")
+            self.identities = json.loads(zlib.decompress(eq.read_bytes()))["values"]
         self.fixtures = {
             path: int(bits, 16) for path, bits in
             json.loads(filename.with_name("fixture_inputs.json").read_bytes()).items()
@@ -139,8 +143,22 @@ class ObservationIndex:
 
     @lru_cache(maxsize=1024)
     def observed_values(self, site):
+        if self.index is not None:
+            return self.index.get("v" + site)
         return [(None if values is None else tuple(v for _, v in values), int(bits, 16))
                 for values, bits in self.values.get(site, ())]
+
+    def comparisons(self, site):
+        if self.index is not None:
+            return self.index.get("c" + site)
+        return tuple((tuple(v for _, v in values), int(bits, 16))
+                     for values, bits in self.identities.get(site, ()))
+
+    def default(self, site):
+        if self.index is not None:
+            rows = self.index.get("d" + site)
+            return rows[0][1] if rows else None
+        return self.defaults.get(site)
 
     def edit(self, text):
         try:
@@ -175,14 +193,12 @@ class ObservationIndex:
             if comparisons:
                 affected = external
                 for compare, left, right in comparisons:
-                    records = self.identities.get(key(path, compare) + ":comparison")
+                    records = self.comparisons(key(path, compare) + ":comparison")
                     if not records:
                         break
                     covered = 0
-                    for values, bits in records:
-                        bits = int(bits, 16)
+                    for (known, truth), bits in records:
                         covered |= bits
-                        known, truth = (value for _, value in values)
                         required = left | right
                         if known & required != required or bool(truth & left) != bool(truth & right):
                             affected |= bits
@@ -209,7 +225,7 @@ class ObservationIndex:
             if declarations:
                 affected = external
                 for line, function, arg in declarations:
-                    bits = self.defaults.get(f"{path}:{line}:{function}:{arg}")
+                    bits = self.default(f"{path}:{line}:{function}:{arg}")
                     if bits is None:
                         return None
                     affected |= bits

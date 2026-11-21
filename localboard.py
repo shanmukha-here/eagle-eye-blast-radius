@@ -318,7 +318,8 @@ def relay(config, archive, work, sha, calibration):
         + shlex.quote(config["remote_dir"])
         + "; d=$(mktemp -d .board.XXXXXXXX); "
         'trap \'rm -rf -- "$d"\' EXIT; tar -xf - -C "$d"; '
-        'python3 "$d/localboard.py" --archive "$d/revision.tar.gz" --sha '
+        'flock -s /home/szv0080/lab_quiet.lock python3 "$d/localboard.py" '
+        '--archive "$d/revision.tar.gz" --sha '
         + shlex.quote(sha)
         + ' --config localboard.json --calibration "$d/calibration.md"'
     )

@@ -51,3 +51,6 @@ tools/*
 !query_values.z
 !values_eq.z
 !fixture_inputs.json
+
+!observation_file.py
+!tools/build_observation_file.py
