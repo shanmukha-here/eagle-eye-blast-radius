@@ -20,7 +20,9 @@ def main(base, output):
     def observe(code, *event):
         filename = code.co_filename
         if filename.startswith(prefix + "sqlglot/"):
-            index[stage + filename[len(prefix):]] |= mask
+            path = filename[len(prefix):]
+            index[stage + path] |= mask
+            index[f"{stage}function:{path}:{code.co_firstlineno}:{code.co_qualname}"] |= mask
         return monitor.DISABLE
 
     monitor.use_tool_id(tool, "TPC-DS execution and rendering")
@@ -63,6 +65,7 @@ def main(base, output):
     finally:
         monitor.set_events(tool, 0)
         monitor.free_tool_id(tool)
+    index["qualified_functions"] = 1
     build(output, index, 32)
     print(f"Indexed TPC-DS reference renders for {len(render)} queries", flush=True)
 

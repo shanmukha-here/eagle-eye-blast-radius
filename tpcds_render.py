@@ -75,15 +75,29 @@ class RenderProof:
         if any(name.startswith("tests/fixtures/optimizer/tpc-") for name in split_diff(text)):
             return None
         read = self.index.mask
-        if read("downstream:" + path):
+        loaded = read("loaded:" + path)
+        used = read("downstream:" + path)
+        if (loaded or used) and not (changes := footprint(self.impact, section)):
+            # Definitions can be observed at class and module initialization.
             return None
-        if read("loaded:" + path) and footprint(self.impact, section) is None:
-            # A reference can observe class definitions without calling a
-            # method in the defining module.
-            return None
-        bits = read("render:" + path)
-        if not bits:
-            return None
+        if used:
+            if not read("qualified_functions"):
+                return None
+            bits = 0
+            for name, records in changes.items():
+                for site, (first, _), _ in records:
+                    location = f"function:{name}:{first}:{'.'.join(site[:-1])}"
+                    if read("downstream:" + location):
+                        return None
+                    bits |= read("render:" + location)
+            if not bits:
+                # Retain the module-level witness when qualified matching did
+                # not positively identify at least one separate render.
+                return None
+        else:
+            bits = read("render:" + path)
+            if not bits:
+                return None
         cases = []
         while bits:
             bit = bits & -bits
