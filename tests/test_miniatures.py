@@ -26,3 +26,14 @@ class ProbeGuards(unittest.TestCase):
         self.assertTrue(cached_return(a, body("globals()[name] = result\nreturn None")))
         self.assertFalse(cached_return(a, body("globals()[name] = None\nreturn None")))
         self.assertFalse(cached_return(a, body("globals()[name] = result\nreturn fn()")))
+
+    def test_core_edit_needs_full_width_witness(self):
+        from impact import structure
+        from miniatures import Miniatures
+
+        probes = Miniatures.__new__(Miniatures)
+        probes.tests = {"parser": 4}
+        old = structure(body("def parse(sql):\n    return sql"))
+        new = structure(body("def parse(sql):\n    return sql[:100]"))
+        self.assertEqual(probes.protect_core(1, None, "sqlglot/tokens.py", "", old, new), 5)
+        self.assertEqual(probes.protect_core(1, None, "sqlglot/tokens.py", "", old, old), 1)

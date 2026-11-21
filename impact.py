@@ -176,6 +176,14 @@ class Impact:
             compile(source, path, "exec", dont_inherit=True),
         )
 
+    def check_startup(self, mask, path, modified):
+        miniature = getattr(self.details, "miniatures", None)
+        if miniature:
+            stress = miniature.tests.get("parser", 0)
+            if stress and not mask & stress:
+                return miniature.check(mask | stress, self.scheduler, "parser", path, modified)
+        return mask
+
     def file_mask(self, path, hunks, single=False, fixture_mix=False):
         rows = self.files.get(path, {})
         if path.startswith("tests/fixtures/"):
@@ -219,7 +227,7 @@ class Impact:
             if startup:
                 mask = startup.registry(path, source, modified, self.details.access)
                 if mask is not None and self.details.import_valid(path, modified):
-                    return mask | rows.get(0, 0) | flow.opaque
+                    return self.check_startup(mask | rows.get(0, 0) | flow.opaque, path, modified)
             if flow and single and flow.equality(path, ast.parse(source), ast.parse(modified)):
                 return rows.get(0, 0) | flow.opaque
             if self.details and single:
@@ -233,7 +241,7 @@ class Impact:
             key = affected[0]
             mask = startup.lazy(path, key, scopes[key][3], new_scopes[key][3])
             if mask is not None:
-                return mask | readers | flow.opaque
+                return self.check_startup(mask | readers | flow.opaque, path, modified)
         if not affected:
             # Non-semantic edits can still move line information or affect source readers.
             fallback = readers | self.visitors.get(path, self.full)

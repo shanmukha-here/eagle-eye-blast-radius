@@ -1,4 +1,5 @@
 """Check the node-limit regression on a smaller input in a fresh interpreter."""
+import importlib
 import sys
 import unittest
 from pathlib import Path
@@ -27,12 +28,16 @@ def exercise():
 
 if __name__ == "__main__":
     root, path = sys.argv[1:]
-    if path.endswith("/__init__.py") or not path.startswith("sqlglot/"):
+    if not path.startswith("sqlglot/") or not path.endswith(".py"):
         raise ValueError("unsupported module")
-    module = path[:-3].replace("/", ".")
+    module = path[:-3].replace("/", ".").removesuffix(".__init__")
     loader = PatchedModule(module, str(Path(root) / path), sys.stdin.buffer.read())
     sys.meta_path.insert(0, loader)
     sys.path.insert(0, root)
     exercise()
+    if module not in sys.modules and path.endswith("/__init__.py"):
+        # The test can start before or after this lazy package is initialized.
+        importlib.import_module(module)
+        exercise()
     if module not in sys.modules or sys.modules[module].__loader__ is not loader:
         raise RuntimeError("patched module was not loaded")
