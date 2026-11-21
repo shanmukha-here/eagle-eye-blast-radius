@@ -12,6 +12,7 @@ COMPARISONS = {
     ast.Is: operator.is_, ast.IsNot: operator.is_not,
 }
 SCALARS = (type(None), bool, int, str)
+COMPARE_BITS = {kind: 1 << i for i, kind in enumerate(COMPARISONS)}
 
 
 def inputs(expr, require_read=True):

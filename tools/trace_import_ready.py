@@ -4,7 +4,6 @@ import ast
 import json
 import os
 import sys
-from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from functools import lru_cache
 from multiprocessing.util import Finalize

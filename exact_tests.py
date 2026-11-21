@@ -4,6 +4,7 @@ import contextlib
 import json
 import multiprocessing
 import os
+import resource
 import signal
 import sys
 import tempfile
@@ -54,9 +55,11 @@ class Collection:
         self.ids = [item.nodeid for item in session.items]
 
 
-def child(send, directory, ids, collect):
+def child(send, directory, ids, collect, cpu_cap):
     try:
         os.setsid()
+        signal.signal(signal.SIGPROF, signal.SIG_DFL)
+        signal.setitimer(signal.ITIMER_PROF, cpu_cap)
         with open(os.devnull, "w") as sink:
             os.dup2(sink.fileno(), 1)
             os.dup2(sink.fileno(), 2)
@@ -87,10 +90,11 @@ class ExactTests:
         self.root = base.resolve()
         self.ready = json.loads(ready.read_bytes())
         self.ctx = multiprocessing.get_context("fork")
-        self.remaining = min(25.0, count * 0.44)
+        self.remaining = min(20.0, count * 0.4)
+        self.collection_remaining = min(14.0, count * 0.35)
         self.deadline = time.monotonic() + min(130.0, count * 2.3 + 3.0)
         if len(os.listdir("/proc/self/task")) != 1 or "sqlglot" in sys.modules:
-            self.remaining = 0.0
+            self.remaining = self.collection_remaining = 0.0
 
     def refine(self, patch, plan):
         remaining = min(self.remaining, self.deadline - time.monotonic())
@@ -123,7 +127,7 @@ class ExactTests:
         return plan
 
     def collection(self, patch, plan):
-        cap = min(self.remaining, self.deadline - time.monotonic(), 1.8)
+        cap = min(self.collection_remaining, self.deadline - time.monotonic(), 3.4)
         if cap < 0.5:
             return None
         try:
@@ -139,6 +143,13 @@ class ExactTests:
 
     def run(self, edits, names, cap, collect):
         started = time.monotonic()
+
+        def used():
+            a = resource.getrusage(resource.RUSAGE_SELF)
+            b = resource.getrusage(resource.RUSAGE_CHILDREN)
+            return a.ru_utime + a.ru_stime + b.ru_utime + b.ru_stime
+
+        baseline = used()
         try:
             if collect:
                 # Warm only the testing machinery. SQLGlot stays cold in each child.
@@ -153,11 +164,15 @@ class ExactTests:
                     recv, send = self.ctx.Pipe(duplex=False)
                     stack.enter_context(recv)
                     stack.enter_context(send)
-                    run = self.ctx.Process(target=child, args=(send, root, names, collect))
+                    available = cap - (used() - baseline)
+                    if available <= 0.04:
+                        return None
+                    run = self.ctx.Process(target=child, args=(send, root, names, collect, available))
                     run.start()
                     send.close()
                     try:
-                        wait = max(0, cap - (time.monotonic() - started))
+                        limit = min(self.deadline, started + cap * 1.75 + 0.15)
+                        wait = max(0, limit - time.monotonic())
                         if recv.poll(wait):
                             return recv.recv()
                     finally:
@@ -172,5 +187,8 @@ class ExactTests:
         except (EOFError, KeyError, OSError, SyntaxError, UnknownChange, ValueError):
             pass
         finally:
-            self.remaining -= time.monotonic() - started
+            if collect:
+                self.collection_remaining -= used() - baseline
+            else:
+                self.remaining -= used() - baseline
         return None

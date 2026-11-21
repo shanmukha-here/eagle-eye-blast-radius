@@ -7,7 +7,7 @@ from functools import lru_cache
 
 from impact import patched, split_diff, syntax, UnknownChange
 from refine import changed_fields
-from value_observations import SCALARS, input_mask, key, replacements
+from value_observations import COMPARE_BITS, SCALARS, input_mask, key, replacements
 
 
 def positional_defaults(args):
@@ -82,8 +82,8 @@ def import_activation(old, new, path, ready):
     return not bound.intersection(runtime_names(old))
 
 
-def identity_changes(old, new):
-    """Allow only swaps between identity and value comparison on the same operands."""
+def comparison_changes(old, new):
+    """Allow comparison changes that evaluate the same pair of operands."""
     original = [node for node in ast.walk(old) if isinstance(node, ast.Compare)]
     updated = [node for node in ast.walk(new) if isinstance(node, ast.Compare)]
     if len(original) != len(updated):
@@ -92,15 +92,16 @@ def identity_changes(old, new):
     for before, after in zip(original, updated):
         if len(before.ops) != 1 or len(after.ops) != 1:
             continue
-        types = {type(before.ops[0]), type(after.ops[0])}
-        if types in ({ast.Is, ast.Eq}, {ast.IsNot, ast.NotEq}):
+        left, right = type(before.ops[0]), type(after.ops[0])
+        if left is not right and left in COMPARE_BITS and right in COMPARE_BITS:
             edits.append((before, after, after.ops))
     if not edits:
         return []
     try:
         for before, after, _ in edits:
             after.ops = before.ops
-        return [before for before, _, _ in edits] if ast.dump(old) == ast.dump(new) else []
+        return [(before, COMPARE_BITS[type(before.ops[0])], COMPARE_BITS[type(ops[0])])
+                for before, _, ops in edits] if ast.dump(old) == ast.dump(new) else []
     finally:
         for _, after, ops in edits:
             after.ops = ops
@@ -170,22 +171,24 @@ class ObservationIndex:
                 affected = (external | imports | dialects | self.references.get(path, 0) |
                             self.impact.visitors.get(path, 0))
                 return "syntax", affected
-            comparisons = identity_changes(old, after) if outer == revised_outer else []
+            comparisons = comparison_changes(old, after) if outer == revised_outer else []
             if comparisons:
                 affected = external
-                for compare in comparisons:
-                    records = self.identities.get(key(path, compare) + ":identity")
+                for compare, left, right in comparisons:
+                    records = self.identities.get(key(path, compare) + ":comparison")
                     if not records:
                         break
                     covered = 0
                     for values, bits in records:
                         bits = int(bits, 16)
                         covered |= bits
-                        if values != [["bool", True]]:
+                        known, truth = (value for _, value in values)
+                        required = left | right
+                        if known & required != required or bool(truth & left) != bool(truth & right):
                             affected |= bits
                     affected |= self.details.lines[path].get(compare.lineno, self.impact.full) & ~covered
                 else:
-                    return "identity", affected
+                    return "comparison", affected
             scalar = replacements(old, after) if outer == revised_outer else []
             if scalar:
                 affected = external

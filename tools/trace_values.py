@@ -18,7 +18,7 @@ from types import FunctionType
 
 import pytest
 
-from value_observations import COMPARISONS, EXPRESSION_FIELDS, SCALARS, inputs, key
+from value_observations import COMPARE_BITS, COMPARISONS, EXPRESSION_FIELDS, SCALARS, inputs, key
 
 ROOT = str(Path.cwd()) + "/"
 QUERY_INPUTS = os.getenv("TRACE_QUERY_INPUTS") == "1"
@@ -75,13 +75,14 @@ class Trace(ast.NodeTransformer):
         if not TYPE_EQUALITY:
             return self.generic_visit(node)
         self.generic_visit(node)
-        if len(node.ops) != 1 or type(node.ops[0]) not in (ast.Is, ast.IsNot, ast.Eq, ast.NotEq):
+        if len(node.ops) != 1 or type(node.ops[0]) not in COMPARISONS:
             return node
         operands = (node.left, node.comparators[0])
-        if not any(isinstance(x, ast.Attribute) and x.attr[:1].isupper() for x in operands):
+        if not any(isinstance(x, (ast.Constant, ast.Tuple)) or
+                   isinstance(x, ast.Attribute) and x.attr[:1].isupper() for x in operands):
             return node
-        func = ast.Name(id="_observe_clean_identity_compare", ctx=ast.Load())
-        args = [ast.Constant(key(self.filename, node) + ":identity"),
+        func = ast.Name(id="_observe_clean_compare", ctx=ast.Load())
+        args = [ast.Constant(key(self.filename, node) + ":comparison"),
                 ast.Constant(type(node.ops[0]).__name__), *operands]
         return ast.copy_location(ast.Call(func=func, args=args, keywords=[]), node)
 
@@ -103,15 +104,31 @@ class Trace(ast.NodeTransformer):
         return node
 
 
-EVALUATE_COMPARE = {kind.__name__: COMPARISONS[kind]
-                    for kind in (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)}
+EVALUATE_COMPARE = {kind.__name__: callback for kind, callback in COMPARISONS.items()}
 
 
-def observe_identity(site, op, left, right):
-    safe = (type(left) is type(right) is type or
-            type(left) in SCALARS and type(right) in SCALARS and
-            (left is right) == (left == right))
-    records[site][current].add((("bool", safe),))
+def exact_operand(value):
+    return type(value) in SCALARS or (
+        type(value) is tuple and len(value) <= 16 and all(type(x) in SCALARS for x in value)
+    )
+
+
+def observe_compare(site, op, left, right):
+    known = true = 0
+    if exact_operand(left) and exact_operand(right):
+        candidates = COMPARISONS
+    elif type(left) is type(right) is type:
+        candidates = {kind: COMPARISONS[kind] for kind in (ast.Is, ast.IsNot, ast.Eq, ast.NotEq)}
+    else:
+        candidates = {}
+    for kind, compare in candidates.items():
+        try:
+            if compare(left, right):
+                true |= COMPARE_BITS[kind]
+            known |= COMPARE_BITS[kind]
+        except TypeError:
+            pass
+    records[site][current].add((("int", known), ("int", true)))
     return EVALUATE_COMPARE[op](left, right)
 
 
@@ -215,7 +232,7 @@ def install():
     SourceFileLoader.get_code = get_code
     SourceFileLoader.exec_module = exec_module
     if TYPE_EQUALITY:
-        builtins._observe_clean_identity_compare = observe_identity
+        builtins._observe_clean_compare = observe_compare
         return
     builtins._observe_clean_scalar_inputs = observe
     sys.addaudithook(default_audit)

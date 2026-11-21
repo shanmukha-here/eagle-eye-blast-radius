@@ -1,6 +1,6 @@
 # Eagle Eye test selector
 
-The container reads unified diffs and the numbered test manifest from `/data`. It reconstructs each change against the pinned sqlglot tree, compiles edited Python source to check validity, and uses clean-base coverage to select tests. It schedules tests using their supplied durations and adds extra checks in unused worker capacity.
+The container reads unified diffs and the numbered test manifest from `/data`. It reconstructs each change against the pinned sqlglot tree, compiles edited Python source to check validity, and uses clean-base coverage to select tests. It packs the selected tests using their supplied durations and the cost of starting each worker.
 
 ## How tests are selected
 
@@ -36,11 +36,11 @@ python "$TOOLS/make_details.py" "$TRACES/lines" "$TRACES/receivers" "$TRACES/ope
     "$PWD" "$ENTRY/base.z" "$ENTRY/details.z"
 ```
 
-Use complete, successful base runs. Pytest IDs follow work into spawned process-pool tasks. Setup and teardown can widen impact to an entire test file. The decision image uses the committed maps and has no pytest dependency.
+Use complete, successful base runs. Pytest IDs follow work into spawned process-pool tasks. Setup and teardown can widen impact to an entire test file. The decision image uses the committed maps and the pinned pytest environment.
 
 ## Dependencies and collection failures
 
-A separate clean-base trace records dialect field reads on instances and classes. It follows inheritance, reflective reads and import-time use. Simple scalar field edits may use that narrower set, with the original cold-import check. An isolated collection failure in a numbered test module includes the file's numbered tests, its transitive importers and source readers. Syntax errors in production modules retain the full fallback.
+A separate clean-base trace records dialect field reads on instances and classes. It follows inheritance, reflective reads and import-time use. Simple scalar field edits may use that narrower set, with the original cold-import check. An isolated collection failure in a numbered test module includes the file's numbered tests, its transitive importers and source readers. For a syntax error in a production module with traced import dependents, cold collection supplements those dependents. An incomplete collection retains the wide fallback.
 
 For a new top-level package module containing only constants or a docstring, the selector checks existing names, module lookups, path probes and directory readers. Entries with executable expressions, test discovery names, package collisions, unknown layouts or additional changed files keep the broad fallback.
 
@@ -122,3 +122,15 @@ setup. That trace applies only when all input statements and the number of paire
 fixture fields are preserved. The generic covering-test executor runs only for wide generator changes with a
 memory check and enough removable worker time to pay for the child. Other long
 tests use the specialized bytecode and query replays.
+
+## Observed inputs and bounded execution
+
+For an isolated edit the selector can check the values a test observes. It tracks omitted default arguments, reflective reads of defaults, predicate inputs, comparison operands, class settings and fixture reads. An incomplete observation retains the test. The comparison witness evaluates both operators on shared, exact built-in operand types. Comment-filtered fixture inputs must agree after normalization. Raw fixture readers stay in the selection.
+
+Executor workers retain query-level contexts. For a scalar change inside one function, the selector repeats the queries whose observed inputs could produce different results. It reuses an already verified optimized plan when the changed operation was observed only after that plan was formed. A separate clean trace identifies settings read only by an executor test's DuckDB reference. The build validates typed tables against the original fixture views. Runtime checks compare the edited reference statements or their returned data.
+
+A bounded child can run a small affected cohort of unchanged unittest methods on the patched source. The build checks for pytest fixtures and measures class setup. A passed test must finish setup, body, subtests and cleanup. A timeout, skip or fixture failure retains affected tests. A test added only as schedule padding stays outside the cohort.
+
+Regenerate the new maps from the same clean pinned checkout and locked environment. Run the `trace_values` pytest plugin with its `install()` called from `sitecustomize.py` in spawned pool workers. Use `TRACE_TYPE_EQUALITY=1` for comparison operands. Use `TRACE_QUERY_INPUTS=1` and run only the upstream TPC-DS executor test for query inputs. Build the first two maps with `build_value_index.py` and use `build_query_values.py` with the pinned `replay_index.z` for the last map.
+
+Use the same worker startup pattern with `trace_import_ready` or `trace_fixture_reads`. Build their maps with `build_ready_imports.py` or `build_fixture_inputs.py`. For reference-side reads install `trace_access` in pool workers and run `trace_reference_roles` on the upstream TPC-DS executor and optimized TPC-H methods. Build the role map with `build_reference_roles.py`. Docker rebuilds the fixture tables from the pinned source.
