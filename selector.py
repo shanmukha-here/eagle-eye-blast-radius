@@ -209,6 +209,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 precision.stats["recovery_long_unobserved"] = sorted(skipped)
             selected = (extra if replace else selected | extra) - skipped
             plan = scheduler.repack(selected, plan)
+            plan = long_cases.recovery_replay(text, plan, base.resolve(), PatchWorkspace, budget.cap, retained)
             precision.stats["import_recovery"] = mask.bit_count()
             precision.stats["recovery_replaces"] = replace
         if report:

@@ -14,7 +14,8 @@ from struct import Struct
 import sys
 import time
 
-from impact import patched, split_diff, UnknownChange
+from impact import patched, split_diff, syntax, UnknownChange
+from narrow import imports
 from precision_body import footprint
 from precision_index import PrecisionIndex
 from short_probe import memory
@@ -282,12 +283,13 @@ class LongCases:
         return {test for test in active if observed & self.scheduler.bits[test]
                 or any(self.index.mask(f"{self.tests[test]}:{path}") for path in edits)}
 
-    def apply(self, text, workers, workspace, cpu_limit, declaration=False):
-        self.stats = {}
+    def apply(self, text, workers, workspace, cpu_limit, declaration=False, only=None):
         if self.index is None or "sqlglot" in sys.modules:
             return workers
         chosen = {n for worker in workers for n in worker}
         active = chosen & self.tests.keys()
+        if only is not None:
+            active &= only
         if not active:
             return workers
         masks = self.changes(text, declaration)
@@ -320,10 +322,43 @@ class LongCases:
             cap = cpu_limit(min(saving * 0.65, 1.35 * expected + 0.20, 4.0))
             if cap > expected:
                 cleared.update(self.prove(workspace, jobs, cap))
-                self.stats["long_cases_run"] = sum(len(cases) for *_, cases in jobs)
+                self.stats["long_cases_run"] = self.stats.get("long_cases_run", 0) + sum(
+                    len(cases) for *_, cases in jobs
+                )
         if cleared:
-            self.stats["long_cases_cleared"] = sorted(cleared)
+            self.stats["long_cases_cleared"] = sorted(
+                cleared.union(self.stats.get("long_cases_cleared", ()))
+            )
             return self.scheduler.repack(chosen - cleared, workers)
+        return workers
+
+    def recovery_replay(self, text, workers, base, workspace_factory, cpu_limit, active):
+        """Replay restored long tests with complete single-module evidence."""
+        if not active or cpu_limit(0.27) < 0.25:
+            return workers
+        try:
+            edits = split_diff(text)
+            if len(edits) != 1:
+                return workers
+            path, hunks = next(iter(edits.items()))
+            if not path.startswith("sqlglot/") or not path.endswith(".py") or path.endswith("/__init__.py"):
+                return workers
+            source = self.impact.base(path)[0]
+            before = syntax(path, source)[0]
+            after = syntax(path, patched(source, hunks))[0]
+            if imports(before) != imports(after):
+                return workers
+            cases = self.changes(text, declaration=True)
+            if cases is None:
+                return workers
+            # A zero mask in a whole-module declaration trace is insufficient
+            # to cover import-time and inheritance effects.
+            active = {test for test in active if cases[self.tests[test]]}
+            if active:
+                with workspace_factory(base, text) as workspace:
+                    return self.apply(text, workers, workspace, cpu_limit, declaration=True, only=active)
+        except (OSError, SyntaxError, UnicodeError, ValueError, UnknownChange, RecursionError):
+            pass
         return workers
 
     def prove(self, workspace, jobs, cap):
