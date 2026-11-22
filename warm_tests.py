@@ -90,7 +90,7 @@ def install(root, changes, called, functions):
 
 
 def fork_job(conn, root, names, changes, called, functions, cap):
-    started = time.process_time()
+    started = seconds()
     os.setsid()
     signal.signal(signal.SIGPROF, signal.SIG_DFL)
     signal.setitimer(signal.ITIMER_PROF, cap)
@@ -99,10 +99,10 @@ def fork_job(conn, root, names, changes, called, functions, cap):
         os.chdir(root)
         sys.path.insert(0, str(root))
         updated = install(root, changes, called, functions)
-        imports = time.process_time() - started
+        imports = seconds() - started
         if updated:
             passed = run_unittests(names, continue_after_failure=True)
-            conn.send((passed, imports, time.process_time() - started - imports))
+            conn.send((passed, imports, seconds() - started - imports))
     except (Exception, SystemExit):
         pass
     finally:

@@ -36,7 +36,7 @@ class Outcomes:
         config.hook.pytest_deselected(items=deselected)
 
     def pytest_collection_finish(self):
-        self.collected = time.process_time()
+        self.collected = seconds()
 
     def pytest_collectreport(self, report):
         self.collection_error |= report.failed
@@ -60,7 +60,7 @@ class Outcomes:
 
 def execute(conn, root, names, cpu_cap, bare):
     try:
-        start = time.process_time()
+        start = seconds()
         os.setsid()
         signal.signal(signal.SIGPROF, signal.SIG_DFL)
         signal.setitimer(signal.ITIMER_PROF, cpu_cap)
@@ -76,10 +76,10 @@ def execute(conn, root, names, cpu_cap, bare):
         import sqlglot
         if "sqlglot/__init__.py" != str(Path(sqlglot.__file__).relative_to(root)):
             return
-        imported = time.process_time()
+        imported = seconds()
         if bare:
             passed = run_unittests(names, continue_after_failure=True)
-            conn.send((passed, imported - start, 0.0, time.process_time() - imported))
+            conn.send((passed, imported - start, 0.0, seconds() - imported))
             return
 
         import pytest
@@ -94,7 +94,7 @@ def execute(conn, root, names, cpu_cap, bare):
         ], plugins=[result])
         if status in (pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED):
             conn.send((result.passed(), imported - start, result.collected - imported,
-                       time.process_time() - result.collected))
+                       seconds() - result.collected))
     except (Exception, SystemExit):
         pass
     finally:
