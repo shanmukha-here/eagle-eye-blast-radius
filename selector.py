@@ -514,11 +514,16 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 raw = f.read()
         except (OSError, UnicodeError):
             continue
-        found = swap.analyze(raw)
+        selected = {n for group in plan for n in group}
+
+        def gain(m, plan=plan, selected=selected):
+            rest = {n for n in selected if m >> n & 1}
+            return (scheduler.cost(plan) - (scheduler.cost(scheduler.repack(rest, plan)) if rest else 0)) / 1000
+
+        found = swap.analyze(raw, gain)
         if found is None:
             continue
         mask = found[0]
-        selected = {n for group in plan for n in group}
         keep = {n for n in selected if mask >> n & 1}
         if report:
             stats["swap_dropped"] = len(selected) - len(keep)

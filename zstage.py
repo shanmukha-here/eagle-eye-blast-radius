@@ -230,13 +230,16 @@ class Candidates:
                 mask |= self.masks.get(code, 0)
         return mask, keys
 
-    def analyze(self, text):
+    def analyze(self, text, gain=None):
         """Return (mask of tests that may change, analyses) or None when unsupported."""
+        self.stats = {}
         if not self.ready or not text.endswith("\n"):
+            self.stats.setdefault("decline", "3:if not self.ready or not text.endswith('")
             return None
         try:
             files = split_diff(text, physical=True)
         except UnknownChange:
+            self.stats.setdefault("decline", "7:except UnknownChange:")
             return None
         mask = self.opaque
         results = {}
@@ -251,16 +254,19 @@ class Candidates:
             if path.startswith("tests/fixtures/") and not path.endswith(".py"):
                 # A data file reaches only the tests that open it while they run.
                 if self.fixtures is None or path in self.fixtures["collect"]:
+                    self.stats.setdefault("decline", "21:if self.fixtures is None or path in self")
                     return None
                 try:
                     patched(self.source(path), hunks, physical=True)
                 except (OSError, UnicodeError, UnknownChange, ValueError):
+                    self.stats.setdefault("decline", "25:except (OSError, UnicodeError, UnknownCh")
                     return None
                 mask |= self.fixtures["opens"].get(path, 0)
                 unswapped |= self.fixtures["opens"].get(path, 0)
                 executable = False
                 continue
             if not (path.startswith("sqlglot/") and path.endswith(".py")):
+                self.stats.setdefault("decline", "31:if not (path.startswith('sqlglot/') and ")
                 return None
             try:
                 old = self.source(path)
@@ -269,6 +275,7 @@ class Candidates:
                                         values=self.values is not None)
             except (OSError, UnicodeError, UnknownChange, zpatch.Unsupported, ValueError,
                     RecursionError, MemoryError, TypeError):
+                self.stats.setdefault("decline", "39:RecursionError, MemoryError, TypeError):")
                 return None
             if result["added"] or result["removed"]:
                 member_files[path] = result["names"]
@@ -302,6 +309,7 @@ class Candidates:
                 executable = False
                 more = self._members(path, result, member_files)
                 if more is None:
+                    self.stats.setdefault("decline", "72:if more is None:")
                     return None
                 keys.extend(more)
                 for key in more:
@@ -310,6 +318,7 @@ class Candidates:
                 found = self.by_name.get((path, name))
                 if not found:
                     # A default can only matter if the function runs. Unknown name: decline.
+                    self.stats.setdefault("decline", "80:# A default can only matter if the funct")
                     return None
                 keys.extend(found)
             for key in keys:
@@ -317,6 +326,7 @@ class Candidates:
                     # Code that ran only while importing sqlglot left its effects in values
                     # that the value diff compares.
                     if self.values is None or key not in self.values["import_only"]:
+                        self.stats.setdefault("decline", "87:if self.values is None or key not in sel")
                         return None
                     need_values = True
                 if key in line_keys:
@@ -325,9 +335,15 @@ class Candidates:
                     mask |= self.masks.get(key, 0)
                 changed.add(key)
             mask |= self.opens.get(path, 0)
+        if need_values and gain is not None and gain(mask) < VALUE_MIN_GAIN:
+            # The import child costs about a CPU second; even a value change no test reads
+            # would not save that much here.
+            self.stats.setdefault("decline", "value_gain")
+            return None
         if need_values:
             found = self._value_mask(texts)
             if found is None:
+                self.stats.setdefault("decline", "98:if found is None:")
                 return None
             # The zygote does not apply value edits, so these commits are not executed.
             executable = False
@@ -340,6 +356,7 @@ class Candidates:
             value_keys = []
         for key in value_keys:
             if key in self.preload and key not in self.values["import_only"]:
+                self.stats.setdefault("decline", "110:if key in self.preload and key not in se")
                 return None
             mask |= self.masks.get(key, 0)
             changed.add(key)
@@ -360,6 +377,7 @@ def swap_text(text):
     return out if out.endswith("\n") or not out else out + "\n"
 
 
+VALUE_MIN_GAIN = 1.5
 WALL0 = time.monotonic()
 LONG_MS = 3000
 # Stages that run tests in the zygote. Short-test refinement cost more CPU than the simulated
