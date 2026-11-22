@@ -232,6 +232,7 @@ class Candidates:
             if key in self.preload:
                 keys.append(key)
                 continue
+            self.__dict__.setdefault("reach_sites", []).append((key, f, line))
             table = self.lines.get(f)
             if table is not None and line in table:
                 mask |= table[line]
@@ -364,6 +365,9 @@ class Candidates:
         ranges_out = {}
         # Tests that fixture or member edits may reach; the zygote applies neither.
         unswapped = 0
+        # Tests that member edits reach, and the code that looks their names up.
+        deleted = 0
+        self.reach_sites = []
         texts = {}
         items = {}
         for path, hunks in files.items():
@@ -435,8 +439,12 @@ class Candidates:
                     line_keys = {}
             keys = list(result["changed"])
             if result["added"] or result["removed"]:
-                # The zygote cannot add or delete methods, so these commits are not executed.
-                executable = False
+                # The zygote deletes plain class methods in place (zexec._delete checks that
+                # nothing else holds them); it cannot add methods.
+                if result["added"] or not DELETE_METHODS \
+                        or len(result["plain_removed"]) != len(result["removed"]) \
+                        or any(name.startswith("__") for _, name, _ in result["removed"]):
+                    executable = False
                 for scope, name, _ in result["added"]:
                     member_keys.add(("c", path, scope, name) if scope else ("m", path, name))
                 for scope, name, _ in result["removed"]:
@@ -450,9 +458,9 @@ class Candidates:
                 more, extra = more
                 keys.extend(more)
                 mask |= extra
-                unswapped |= extra
+                deleted |= extra
                 for key in more:
-                    unswapped |= self.masks.get(key, 0)
+                    deleted |= self.masks.get(key, 0)
             for name, _, _ in result["defaults"]:
                 found = self.by_name.get((path, name))
                 if not found:
@@ -504,6 +512,16 @@ class Candidates:
             changed.add(key)
         if not all(p.startswith("tests/fixtures/") and p.endswith(".sql") for p in files):
             items = {}
+        if not executable:
+            unswapped |= deleted
+        else:
+            # Deleted methods are applied: replays count the code that looks the name up as
+            # changed, at the lookup line where the code's own edit has line ranges.
+            for key, f, line in self.reach_sites:
+                if key in ranges_out:
+                    ranges_out[key].append((f, line, line))
+                elif key not in changed:
+                    changed.add(key)
         return mask, results, changed, executable, ranges_out, unswapped, items
 
     def fixture_items(self, path, new):
@@ -596,6 +614,8 @@ PROTOCOL_NAMES = {
 }
 PROTOCOL_PREFIXES = ("test", "visit_", "do_", "handle_", "pytest_")
 FIXTURE_LOADERS = ("load_sql_fixture_pairs", "load_sql_fixtures")
+# Commits that only delete plain class methods run in the zygote.
+DELETE_METHODS = True
 # Fixture tests whose test method reads each of its SQL fixture files only through one
 # tests/helpers.py loader, handling and asserting one item per loop iteration (audited in the
 # pinned source: check_file users, test_annotate_funcs, test_annotate_types,

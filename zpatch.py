@@ -346,6 +346,10 @@ def analyze(path, old_text, new_text, filename, values=False):
             "added": [(scope, name, _passthrough(node)) for scope, name, node in added],
             "removed": [(scope, name, (path, (scope + "." if scope else "") + name, node.lineno))
                         for scope, name, node in removed],
+            # Removed methods that are plain, undecorated function definitions in a class.
+            "plain_removed": [(scope, name) for scope, name, node in removed
+                              if scope and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                              and not node.decorator_list],
             "names": member_names, "values": edits, "noswap": noswap}
 
 

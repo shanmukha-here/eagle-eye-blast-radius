@@ -202,6 +202,42 @@ class ValueEditTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 zexec._serve_fixtures(root, {path: "new\n"})
 
+    def test_plain_removed_lists_undecorated_class_methods(self):
+        old = ("class A:\n    def f(self):\n        return 1\n    def h(self):\n        return 3\n"
+               "def m():\n    return 4\n")
+        new = "class A:\n    def h(self):\n        return 3\n"
+        r = zpatch.analyze("sqlglot/x.py", old, new, "x.py")
+        self.assertEqual(sorted(name for _, name, _ in r["removed"]), ["f", "m"])
+        # Module functions are not deleted in place.
+        self.assertEqual(r["plain_removed"], [("A", "f")])
+
+    def test_zygote_deletes_a_method_only_when_nothing_else_holds_it(self):
+        import gc
+        import zexec
+        base = os.path.dirname(os.path.abspath(__file__))
+        filename = os.path.join(base, "sqlglot", "x.py")
+        source = "class A:\n    def f(self):\n        return 1\nclass B(A):\n    pass\n"
+        for alias in (False, True):
+            module = types.ModuleType("x")
+            exec(compile(source, filename, "exec"), module.__dict__)
+            func = module.A.f
+            index = {("sqlglot/x.py", "A.f", 2): [func]}
+            if alias:
+                module.CACHE = {"f": func}
+            frozen = gc.get_freeze_count()
+            try:
+                zexec._delete(base, module, "A", "f", ("sqlglot/x.py", "A.f", 2), index)
+                self.assertFalse(alias)
+                self.assertFalse(hasattr(module.B(), "f"))
+            except LookupError:
+                self.assertTrue(alias)
+            self.assertEqual(gc.get_freeze_count(), max(frozen, gc.get_freeze_count()))
+            gc.unfreeze()
+        module = types.ModuleType("x")
+        exec(compile(source, filename, "exec"), module.__dict__)
+        with self.assertRaises(LookupError):
+            zexec._delete(base, module, "A", "f", ("sqlglot/x.py", "A.f", 9), {})
+
 
 if __name__ == "__main__":
     unittest.main()

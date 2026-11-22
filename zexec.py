@@ -248,6 +248,12 @@ def _apply(base, patch, index):
         for key, code in result["swaps"]:
             for func in index.get(key, ()):
                 func.__code__ = code
+        # Added methods and other deletions are not applied; the stage replays only tests
+        # that such edits cannot reach.
+        plain = set(result["plain_removed"])
+        for scope, name, key in result["removed"]:
+            if (scope, name) in plain:
+                _delete(base, module, scope, name, key, index)
         for kind, qualname, doc in result["docs"]:
             if kind == "module":
                 module.__doc__ = doc
@@ -275,6 +281,38 @@ def _apply(base, patch, index):
     sys.meta_path.insert(0, _Source(serve))
     if fixtures:
         _serve_fixtures(base, fixtures)
+
+
+def _delete(base, module, scope, name, key, index):
+    """Delete a plain method from its class, as the patched class body would leave it out.
+    Raise unless the class dict holds exactly that function and nothing else refers to it
+    (a cache, alias or bound method made before the fork would keep the old behavior)."""
+    target = module
+    for part in scope.split("."):
+        target = vars(target)[part]
+    if not isinstance(target, type) or type(target).__delattr__ is not type.__delattr__:
+        raise LookupError(scope)
+    func = vars(target).get(name)
+    code = getattr(func, "__code__", None)
+    if not isinstance(func, types.FunctionType) or code.co_filename != os.path.join(base, key[0]) \
+            or (code.co_qualname, code.co_firstlineno) != (key[1], key[2]):
+        raise LookupError(key)
+    delattr(target, name)
+    # Frozen objects are invisible to get_referrers (unfreeze and freeze only splice lists).
+    lists = set()
+    for group in index.values():
+        for other in group:
+            if other is func:
+                lists.add(id(group))
+    gc.unfreeze()
+    try:
+        holders = gc.get_referrers(func)
+    finally:
+        gc.freeze()
+    for holder in holders:
+        if id(holder) in lists or isinstance(holder, types.FrameType):
+            continue
+        raise LookupError("referenced: " + type(holder).__name__)
 
 
 def _serve_fixtures(base, texts):
