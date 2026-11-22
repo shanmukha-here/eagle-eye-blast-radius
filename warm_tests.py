@@ -102,7 +102,7 @@ def fork_job(conn, root, names, changes, called, functions, cap):
         updated = install(root, changes, called, functions)
         imports = seconds() - started
         if updated:
-            passed = run_unittests(names, continue_after_failure=True)
+            passed = run_unittests(names, continue_after_failure=True, timeout=6)
             conn.send((passed, imports, seconds() - started - imports))
     except (Exception, SystemExit):
         pass

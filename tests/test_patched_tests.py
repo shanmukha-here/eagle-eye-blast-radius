@@ -29,6 +29,15 @@ class PatchedTestEvidence(unittest.TestCase):
         self.assertEqual(len(result.failures), 1)
         self.assertEqual(len(result.passed), 1)
 
+    def test_caught_timeout_still_cannot_certify_test(self):
+        result = UnitOutcomes()
+        case = PatchedTestEvidence("test_caught_timeout_still_cannot_certify_test")
+        result.startTest(case)
+        with self.assertRaises(TimeoutError):
+            result.on_timeout(None, None)
+        result.addSuccess(case)
+        self.assertFalse(result.passed)
+
     def test_completed_assertions_need_successful_shared_teardown(self):
         a, b, c = "test_same.py::a", "test_same.py::b", "test_other.py::c"
         outcomes = Outcomes([a, b, c])

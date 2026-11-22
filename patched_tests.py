@@ -79,7 +79,7 @@ def execute(conn, root, names, cpu_cap, bare):
             return
         imported = seconds()
         if bare:
-            passed = run_unittests(names, continue_after_failure=True)
+            passed = run_unittests(names, continue_after_failure=True, timeout=6)
             conn.send((passed, imported - start, 0.0, seconds() - imported))
             return
 
