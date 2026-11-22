@@ -20,6 +20,7 @@ from decision import Execution, PatchWorkspace
 from flow import Flow
 from observed import Observers
 from exact_tests import ExactTests
+from patched_tests import PatchedTests
 from optimizer_probe import Replay
 from miniatures import CORE, Miniatures
 from startup import Startup
@@ -324,11 +325,15 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 if insured is not plan:
                     precision.stats["insurance_tests"] = sum(map(len, insured)) - sum(map(len, plan))
                     plan = insured
+            plan = patched_tests.refine(text, plan, long_cases.tests.keys(), verify.passed)
+        else:
+            patched_tests.stats = {}
         if report:
             metrics = dict(commit=path.stem, cpu=seconds() - beginning,
                            startup=2 * len(plan),
                            busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
-                           **queries.stats, **precision.stats, **long_cases.stats, **risk.stats)
+                           **queries.stats, **precision.stats, **long_cases.stats, **risk.stats,
+                           **patched_tests.stats)
             print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
@@ -336,6 +341,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     surface = Surface(impact, map_path.parent, observation.references)
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
     verify = ExactTests(scheduler, tests, base, len(patches), map_path.with_name("unit_ready.json"))
+    patched_tests = PatchedTests(scheduler, verify, base, len(patches))
     for check in (impact.details.replay,
                   incumbent.details.replay, impact.details.miniatures,
                   execution, gate, references, verify):
