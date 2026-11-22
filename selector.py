@@ -1,4 +1,5 @@
 """Schedule numbered tests using the impact map of the pinned source tree."""
+from collections import deque
 import json
 import math
 import os
@@ -273,15 +274,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         coverage = recovered[0]
         return not mask & scheduler.known & ~coverage and bool(coverage & short_bits & ~mask)
 
-    pending = None
+    planned = []
 
-    def finish():
-        nonlocal pending
-        if pending is None:
-            return
-        path, plan, nearby, passed, stats, launched = pending
-        pending = None
-        if launched:
+    def finish(record, lane):
+        path, _, plan, nearby, passed, _, stats = record
+        if lane is not None:
             plan, passed, measured = lane.finish(plan, passed)
             if report:
                 stats.update(measured)
@@ -299,7 +296,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
 
     def emit(path, plan, beginning, text=None, verified=False):
-        nonlocal pending
         recovered = None if verified else recovery.declarations(text)
         skip_risk = False
         if recovered is not None:
@@ -355,15 +351,12 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                          **queries.stats, **precision.stats, **long_cases.stats, **risk.stats)
         passed = verify.passed.copy() if text else set()
         nearby = insurance_scope(text) if text and plan else None
-        finish()
-        launched = lane.submit(text, plan, passed, verify.attempted)
-        pending = path, plan, nearby, passed, stats, launched
+        planned.append((path, text, plan, nearby, passed, verify.attempted.copy(), stats))
     observation = ObservationIndex(impact, map_path.with_name("values.z"))
     surface = Surface(impact, map_path.parent, observation.references)
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
     verify = ExactTests(scheduler, tests, base, len(patches), map_path.with_name("unit_ready.json"))
     patched_tests = PatchedTests(scheduler, verify, base, len(patches), precision)
-    lane = ExecutionLane(patched_tests, long_cases.tests)
     for check in (impact.details.replay,
                   incumbent.details.replay, impact.details.miniatures,
                   execution, gate, references, verify):
@@ -504,8 +497,28 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         except UnicodeError:
             plan = fallback_plan
         emit(path, plan, beginning, risk_text)
-    finish()
-    lane.close()
+    # Complete discovery before starting proofs. A native import check can
+    # fail closed if an overlapping test consumes its short wall allowance.
+    cold_tests = PatchedTests(scheduler, verify, base, len(patches), precision)
+    cold_tests.deadline = patched_tests.deadline
+    patched_tests.remaining /= 2
+    cold_tests.remaining = patched_tests.remaining
+    cold_tests.warm.disabled = cold_tests.fixture_warm.disabled = True
+    lanes = [ExecutionLane(engine, long_cases.tests) for engine in (patched_tests, cold_tests)]
+    pending = deque()
+    try:
+        for index, record in enumerate(planned):
+            if len(pending) == len(lanes):
+                finish(*pending.popleft())
+            _, text, plan, _, passed, attempted, _ = record
+            lane = lanes[index % len(lanes)]
+            launched = lane.submit(text, plan, passed, attempted)
+            pending.append((record, lane if launched else None))
+        while pending:
+            finish(*pending.popleft())
+    finally:
+        for lane in lanes:
+            lane.close()
     if report and cold_file.is_file():
         print(json.dumps(dict(cold_import_checks_skipped=impact.details.cold_import.shortcuts)), file=sys.stderr)
 
