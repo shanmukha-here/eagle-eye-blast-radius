@@ -1,0 +1,275 @@
+"""Run candidate tests on patched code in forks of one interpreter that imported the suite.
+
+The server imports the numbered test modules once, as pytest collection would. For each job
+it forks a child that swaps the edited functions' code objects in place (closures created
+earlier are found by their code object), updates docstrings and literal defaults, serves the
+patched text to modules imported later, then runs the requested tests with unittest.
+"""
+
+import gc
+import importlib.abc
+import importlib.util
+import marshal
+import os
+import select
+import signal
+import struct
+import subprocess
+import sys
+import time
+import types
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+RSS_LIMIT = 2200 << 20
+
+
+def _send(stream, obj):
+    data = marshal.dumps(obj)
+    stream.write(struct.pack("<I", len(data)) + data)
+    stream.flush()
+
+
+def _recv(stream):
+    head = stream.read(4)
+    if len(head) < 4:
+        raise EOFError
+    (size,) = struct.unpack("<I", head)
+    data = stream.read(size)
+    if len(data) < size:
+        raise EOFError
+    return marshal.loads(data)
+
+
+class Zygote:
+    """Parent-side handle. All methods fail closed: None means no information."""
+
+    def __init__(self, base, ids, deadline):
+        self.base = os.path.abspath(str(base))
+        self.ids = list(ids)
+        self.deadline = deadline
+        self.process = None
+        self.cpu = 0.0
+        self.failed = False
+
+    def start(self):
+        if self.process is not None or self.failed:
+            return self.process is not None
+        env = dict(os.environ)
+        env["PYTHONPATH"] = HERE
+        try:
+            self.process = subprocess.Popen(
+                [sys.executable, "-B", "-c", "import zexec; zexec.serve()"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=None if os.environ.get("ZEXEC_DEBUG") else subprocess.DEVNULL,
+                cwd=HERE, env=env)
+            _send(self.process.stdin, (self.base, self.ids))
+            ready = self._wait(60.0)
+            if ready != "ready":
+                raise OSError("zygote failed")
+        except (OSError, EOFError, ValueError):
+            self.close()
+            self.failed = True
+            return False
+        return True
+
+    def _wait(self, timeout):
+        limit = min(self.deadline, time.monotonic() + timeout)
+        fd = self.process.stdout.fileno()
+        if not select.select([fd], [], [], max(0.0, limit - time.monotonic()))[0]:
+            raise OSError("timeout")
+        return _recv(self.process.stdout)
+
+    def run(self, patch, tests, limits, budget, wall):
+        """Return (failed, done) test numbers, or None."""
+        if not self.start():
+            return None
+        try:
+            _send(self.process.stdin, (patch, [self.ids[n] for n in tests],
+                                       [float(limits[n]) for n in tests], float(budget), float(wall)))
+            reply = self._wait(wall + 5.0)
+        except (OSError, EOFError, ValueError):
+            self.close()
+            self.failed = True
+            return None
+        if reply is None:
+            return None
+        failed, done = reply
+        number = {self.ids[n]: n for n in tests}
+        return {number[t] for t in failed}, {number[t] for t in done}
+
+    def close(self):
+        if self.process is not None:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
+            self.process = None
+
+
+# ---------------------------------------------------------------- server side
+
+
+class _Source(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def __init__(self, files):
+        self.files = files  # module name -> (filename, text, is_package)
+
+    def find_spec(self, fullname, path=None, target=None):
+        entry = self.files.get(fullname)
+        if entry is None:
+            return None
+        filename, _, package = entry
+        return importlib.util.spec_from_file_location(
+            fullname, filename, loader=self,
+            submodule_search_locations=[os.path.dirname(filename)] if package else None)
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        filename, text, _ = self.files[module.__name__]
+        exec(compile(text, filename, "exec", dont_inherit=True), module.__dict__)
+
+
+def _module_name(path):
+    parts = path[:-3].split("/")
+    package = parts[-1] == "__init__"
+    if package:
+        parts = parts[:-1]
+    return ".".join(parts), package
+
+
+def _apply(base, patch, index):
+    import zpatch
+    from impact import patched, split_diff
+
+    files = split_diff(patch, physical=True)
+    serve = {}
+    for path, hunks in files.items():
+        filename = os.path.join(base, path)
+        with open(filename, encoding="utf-8", newline="") as f:
+            old = f.read()
+        new = patched(old, hunks, physical=True)
+        result = zpatch.analyze(path, old, new, filename)
+        name, package = _module_name(path)
+        serve[name] = (filename, new, package)
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        for key, code in result["swaps"]:
+            for func in index.get(key, ()):
+                func.__code__ = code
+        for kind, qualname, doc in result["docs"]:
+            if kind == "module":
+                module.__doc__ = doc
+            else:
+                target = module
+                for part in qualname.split("."):
+                    target = getattr(target, part)
+                target.__doc__ = doc
+        for qualname, values, kw in result["defaults"]:
+            funcs = [f for k, fs in index.items() if k[0] == path and k[1] == qualname for f in fs]
+            if not funcs:
+                raise LookupError(qualname)
+            for func in funcs:
+                code = func.__code__
+                func.__defaults__ = tuple(values) if values else None
+                names = code.co_varnames[code.co_argcount:code.co_argcount + code.co_kwonlyargcount]
+                kwd = {n: v for n, v in zip(names, kw) if v is not None}
+                func.__kwdefaults__ = kwd or None
+        # A function swapped by docstring only keeps its new __doc__ in sync.
+        for key, code in result["swaps"]:
+            doc = code.co_consts[0] if code.co_consts and isinstance(code.co_consts[0], str) else None
+            for func in index.get(key, ()):
+                if func.__doc__ != doc and doc is not None:
+                    func.__doc__ = doc
+    sys.meta_path.insert(0, _Source(serve))
+
+
+def serve():
+    import zrun
+
+    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+    base, ids = _recv(stdin)
+    os.chdir(base)
+    sys.path.insert(1, HERE)
+    found, _ = zrun.load(base, ids)
+    import zpatch  # noqa: F401  (import before forking)
+    import impact  # noqa: F401
+    prefix = os.path.join(base, "sqlglot") + os.sep
+    index = {}
+    for obj in gc.get_objects():
+        if isinstance(obj, types.FunctionType):
+            code = obj.__code__
+            if code.co_filename.startswith(prefix):
+                key = (code.co_filename[len(base) + 1:], code.co_qualname, code.co_firstlineno)
+                index.setdefault(key, []).append(obj)
+    runner = zrun.Runner(found)
+    gc.freeze()
+    _send(stdout, "ready")
+    while True:
+        try:
+            job = _recv(stdin)
+        except EOFError:
+            break
+        patch, tests, limits, budget, wall = job
+        r, w = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(r)
+            code = 1
+            try:
+                signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+                _apply(base, patch, index)
+                runnable = [t for t in tests if t in found]
+                failed, done = runner.run(runnable, dict(zip(tests, limits)), stop_after=budget)
+                payload = marshal.dumps((sorted(failed), sorted(done)))
+                code = 0
+            except BaseException:
+                if os.environ.get("ZEXEC_DEBUG"):
+                    import traceback
+                    traceback.print_exc()
+                payload = marshal.dumps(None)
+            with os.fdopen(w, "wb") as out:
+                out.write(payload)
+            os._exit(code)
+        os.close(w)
+        chunks = []
+        limit = time.monotonic() + wall
+        killed = False
+        page = os.sysconf("SC_PAGE_SIZE")
+        while True:
+            left = limit - time.monotonic()
+            if left <= 0:
+                os.kill(pid, signal.SIGKILL)
+                killed = True
+                break
+            if not select.select([r], [], [], min(left, 0.05))[0]:
+                # Resident memory guard: the scorer allows 4 GiB for everything.
+                try:
+                    with open(f"/proc/{pid}/statm") as f:
+                        resident = int(f.read().split()[1]) * page
+                except (OSError, ValueError, IndexError):
+                    resident = 0
+                if resident > RSS_LIMIT:
+                    os.kill(pid, signal.SIGKILL)
+                    killed = True
+                    break
+                continue
+            chunk = os.read(r, 1 << 20)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        os.close(r)
+        os.waitpid(pid, 0)
+        reply = None
+        if not killed and chunks:
+            try:
+                reply = marshal.loads(b"".join(chunks))
+            except (EOFError, ValueError, TypeError):
+                reply = None
+        _send(stdout, reply)

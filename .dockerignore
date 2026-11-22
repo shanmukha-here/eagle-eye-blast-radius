@@ -76,3 +76,8 @@
 !recovery.py
 !cold_import.py
 !build-maps.tar.xz
+!zstage.py
+!zpatch.py
+!zrun.py
+!zexec.py
+!zmap.xz

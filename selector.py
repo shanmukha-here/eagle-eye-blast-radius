@@ -38,6 +38,7 @@ from registry_guard import changes_routing
 from precision import Precision
 from recovery import Recovery
 from risk_policy import RiskPolicy
+from zstage import Candidates, Execute
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details
 
@@ -502,6 +503,43 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         except UnicodeError:
             plan = fallback_plan
         emit(path, plan, beginning, risk_text)
+    # Exact code-swap candidates: drop tests that never start a changed code object.
+    swap = Candidates(map_path.with_name("zmap.xz"), base, [t["id"] for t in tests])
+    swapped = {}
+    for i, (path, text, plan, nearby, passed, attempted, stats) in enumerate(planned):
+        if not plan or not swap.ready:
+            continue
+        try:
+            with open(path, encoding="utf-8", newline="") as f:
+                raw = f.read()
+        except (OSError, UnicodeError):
+            continue
+        found = swap.analyze(raw)
+        if found is None:
+            continue
+        mask = found[0]
+        selected = {n for group in plan for n in group}
+        keep = {n for n in selected if mask >> n & 1}
+        if report:
+            stats["swap_dropped"] = len(selected) - len(keep)
+        if keep != selected:
+            plan = scheduler.repack(keep, plan) if keep else []
+            planned[i] = path, text, plan, nearby, passed, attempted, stats
+        swapped[i] = raw, mask
+    executor = Execute(swap, scheduler, base, [t["id"] for t in tests], len(patches))
+    order = sorted(swapped, key=lambda i: -scheduler.cost(planned[i][2]))
+    try:
+        for i in order:
+            raw, mask = swapped[i]
+            path, text, plan, nearby, passed, attempted, stats = planned[i]
+            begin = seconds()
+            plan = executor.refine(raw, plan, mask)
+            if report:
+                stats.update(executor.stats)
+                stats["cpu"] += seconds() - begin
+            planned[i] = path, text, plan, nearby, passed, attempted, stats
+    finally:
+        executor.close()
     # Complete discovery before starting proofs. A native import check can
     # fail closed if an overlapping test consumes its short wall allowance.
     cold_tests = PatchedTests(scheduler, verify, base, len(patches), precision)
