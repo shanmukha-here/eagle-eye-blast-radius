@@ -86,11 +86,12 @@ def execute(conn, root, names, cpu_cap, bare):
         import pytest
 
         result = Outcomes(names)
+        paths = sorted({node.partition("::")[0] for node in names})
         status = pytest.main([
-            "-p", "no:terminal", "-p", "no:cacheprovider", "-p", "pytest_timeout",
+            "-q", "--tb=no", "-p", "no:cacheprovider", "-p", "pytest_timeout",
             "--timeout", "6", "--timeout-method", "signal",
             "--continue-on-collection-errors",
-            "--rootdir", str(root), "--basetemp", str(root / "pytest-run"), *names,
+            "--rootdir", str(root), "--basetemp", str(root / "pytest-run"), *paths,
         ], plugins=[result])
         if status in (pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED):
             conn.send((result.passed(), imported - start, result.collected - imported,
@@ -219,8 +220,7 @@ class PatchedTests:
         begin = seconds()
         available = min(self.remaining, 2.5, upside * 0.90)
         expected = self.estimate(candidates)
-        removes_worker = len(after) < len(plan)
-        if expected > available and not (removes_worker and expected < 1.20 * upside):
+        if expected > available:
             candidates = self.cohort(selected, candidates, plan, available)
             if not candidates:
                 self.stats = {"patched_skipped": "cohort_cost"}
