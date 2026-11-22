@@ -262,6 +262,70 @@ def _value_edits(old_body, new_body, scope, out):
         out.append((".".join(scope), names))
 
 
+def _future_annotations(tree):
+    return any(isinstance(node, ast.ImportFrom) and node.module == "__future__"
+               and any(a.name == "annotations" for a in node.names) for node in tree.body)
+
+
+def _plain_added(new_tree, new_code, added):
+    """[(scope, name, code, defaults, kwdefaults, annotations, doc)] for added methods the zygote
+    can build exactly from the patched module's code: an undecorated def in an undecorated
+    class whose body names it nowhere else, with constant defaults and string annotations.
+    Methods that miss any of these are left out (the stage then does not execute the commit)."""
+    out = []
+    future = _future_annotations(new_tree)
+    codes = {}
+    stack = [new_code]
+    while stack:
+        c = stack.pop()
+        for k in _children(c):
+            codes.setdefault((k.co_qualname, k.co_firstlineno), []).append(k)
+            stack.append(k)
+    for scope, name, node in added:
+        if not scope or name.startswith("_") and name.endswith("_") or name.endswith("_sql") \
+                or not isinstance(node, ast.FunctionDef) or node.decorator_list \
+                or getattr(node, "type_params", None):
+            continue
+        body, cls = new_tree.body, None
+        for part in scope.split("."):
+            found = [n for n in body if isinstance(n, ast.ClassDef) and n.name == part]
+            if len(found) != 1:
+                cls = None
+                break
+            cls = found[0]
+            body = cls.body
+        if cls is None or cls.decorator_list or cls.keywords:
+            continue
+        # The class body (the def is already taken out) must not read or bind the name.
+        if any(isinstance(n, ast.Name) and n.id == name or isinstance(n, ast.arg) and n.arg == name
+               or isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and n.name == name
+               for n in ast.walk(cls)):
+            continue
+        a = node.args
+        if not all(isinstance(d, ast.Constant) for d in a.defaults) \
+                or not all(d is None or isinstance(d, ast.Constant) for d in a.kw_defaults):
+            continue
+        params = a.posonlyargs + a.args + ([a.vararg] if a.vararg else []) + a.kwonlyargs \
+            + ([a.kwarg] if a.kwarg else [])
+        annotations = {p.arg: p.annotation for p in params if p.annotation is not None}
+        if node.returns is not None:
+            annotations["return"] = node.returns
+        if annotations and not future:
+            continue
+        code = codes.get((scope + "." + name, node.lineno), [])
+        if len(code) != 1 or set(code[0].co_freevars) - {"__class__"}:
+            continue
+        code = code[0]
+        doc = code.co_consts[0] if _doc_index(node.body) == 0 and code.co_consts \
+            and isinstance(code.co_consts[0], str) else None
+        if _doc_index(node.body) == 0 and doc is None:
+            continue
+        kw = {p.arg: d.value for p, d in zip(a.kwonlyargs, a.kw_defaults) if d is not None}
+        out.append((scope, name, code, tuple(d.value for d in a.defaults) or None, kw or None,
+                    {k: ast.unparse(v) for k, v in annotations.items()}, doc))
+    return out
+
+
 def analyze(path, old_text, new_text, filename, values=False):
     """Return dict(changed=[keys], swaps=[(key, new_code)], docs=[...], defaults=[...]).
 
@@ -350,6 +414,7 @@ def analyze(path, old_text, new_text, filename, values=False):
             "plain_removed": [(scope, name) for scope, name, node in removed
                               if scope and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
                               and not node.decorator_list],
+            "plain_added": _plain_added(new_tree, new_code, added),
             "names": member_names, "values": edits, "noswap": noswap}
 
 

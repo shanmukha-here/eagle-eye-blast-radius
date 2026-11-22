@@ -440,8 +440,11 @@ class Candidates:
             keys = list(result["changed"])
             if result["added"] or result["removed"]:
                 # The zygote deletes plain class methods in place (zexec._delete checks that
-                # nothing else holds them); it cannot add methods.
-                if result["added"] or not DELETE_METHODS \
+                # nothing else holds them) and sets plain added methods built from the patched
+                # code (zexec._add raises for classes with metaclasses or subclass hooks).
+                if result["removed"] and not DELETE_METHODS \
+                        or result["added"] and not ADD_METHODS \
+                        or len(result["plain_added"]) != len(result["added"]) \
                         or len(result["plain_removed"]) != len(result["removed"]) \
                         or any(name.startswith("__") for _, name, _ in result["removed"]):
                     executable = False
@@ -616,6 +619,7 @@ PROTOCOL_PREFIXES = ("test", "visit_", "do_", "handle_", "pytest_")
 FIXTURE_LOADERS = ("load_sql_fixture_pairs", "load_sql_fixtures")
 # Commits that only delete plain class methods run in the zygote.
 DELETE_METHODS = True
+ADD_METHODS = True
 # Fixture tests whose test method reads each of its SQL fixture files only through one
 # tests/helpers.py loader, handling and asserting one item per loop iteration (audited in the
 # pinned source: check_file users, test_annotate_funcs, test_annotate_types,

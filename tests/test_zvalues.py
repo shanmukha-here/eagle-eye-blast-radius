@@ -211,6 +211,52 @@ class ValueEditTests(unittest.TestCase):
         # Module functions are not deleted in place.
         self.assertEqual(r["plain_removed"], [("A", "f")])
 
+    def test_plain_added_builds_methods_from_the_patched_code(self):
+        import zexec
+        old = ("from __future__ import annotations\nclass B:\n    def g(self):\n        return 1\n"
+               "class A(B):\n    X = 1\n")
+        new = old + ('    def g(self, n: int = 2, *, k=None) -> int:\n        """Doc."""\n'
+                     '        return super().g() + n\n')
+        r = zpatch.analyze("sqlglot/x.py", old, new, "x.py")
+        self.assertEqual([x[:2] for x in r["plain_added"]], [("A", "g")])
+        module = types.ModuleType("x")
+        exec(compile(old, "x.py", "exec"), module.__dict__)
+        zexec._add(module, *r["plain_added"][0])
+        real = types.ModuleType("x")
+        exec(compile(new, "x.py", "exec"), real.__dict__)
+        built, want = vars(module.A)["g"], vars(real.A)["g"]
+        for attr in ("__code__", "__defaults__", "__kwdefaults__", "__annotations__", "__doc__",
+                     "__qualname__"):
+            self.assertEqual(getattr(built, attr), getattr(want, attr), attr)
+        self.assertEqual(module.A().g(), 3)
+        # A second add of the same name, or a class with a subclass hook, raises.
+        with self.assertRaises(LookupError):
+            zexec._add(module, *r["plain_added"][0])
+        hooked = old.replace("class B:", "class B:\n    def __init_subclass__(cls):\n        pass")
+        module = types.ModuleType("x")
+        exec(compile(hooked, "x.py", "exec"), module.__dict__)
+        r = zpatch.analyze("sqlglot/x.py", hooked, hooked + new[len(old):], "x.py")
+        with self.assertRaises(LookupError):
+            zexec._add(module, *r["plain_added"][0])
+
+    def test_plain_added_leaves_out_methods_it_cannot_build_exactly(self):
+        old = "class A:\n    Y = 1\n"
+        cases = [
+            "class A:\n    Y = 1\n    def f(self, x=-1):\n        return x\n",
+            "class A:\n    Y = 1\n    def f(self, x: int):\n        return x\n",
+            "class A:\n    Y = 1\n    def f(self):\n        return 1\n    Z = f\n",
+            "class A:\n    Y = 1\n    def to_sql(self):\n        return 1\n",
+            "class A(metaclass=M):\n    Y = 1\n    def f(self):\n        return 1\n",
+            "@d\nclass A:\n    Y = 1\n    def f(self):\n        return 1\n",
+        ]
+        for new in cases:
+            o = old.replace("class A:", "class A(metaclass=M):") if "metaclass" in new else old
+            o = "@d\n" + o if new.startswith("@d") else o
+            o = o + "    Z = f\n" if "Z = f" in new else o
+            r = zpatch.analyze("sqlglot/x.py", o, new, "x.py", values=True)
+            self.assertEqual(len(r["added"]), 1, new)
+            self.assertEqual(r["plain_added"], [], new)
+
     def test_zygote_deletes_a_method_only_when_nothing_else_holds_it(self):
         import gc
         import zexec

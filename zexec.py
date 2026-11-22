@@ -248,12 +248,14 @@ def _apply(base, patch, index):
         for key, code in result["swaps"]:
             for func in index.get(key, ()):
                 func.__code__ = code
-        # Added methods and other deletions are not applied; the stage replays only tests
-        # that such edits cannot reach.
+        # Other additions and deletions are not applied; the stage replays only tests that
+        # such edits cannot reach.
         plain = set(result["plain_removed"])
         for scope, name, key in result["removed"]:
             if (scope, name) in plain:
                 _delete(base, module, scope, name, key, index)
+        for scope, name, code, defaults, kwdefaults, annotations, doc in result["plain_added"]:
+            _add(module, scope, name, code, defaults, kwdefaults, annotations, doc)
         for kind, qualname, doc in result["docs"]:
             if kind == "module":
                 module.__doc__ = doc
@@ -313,6 +315,41 @@ def _delete(base, module, scope, name, key, index):
         if id(holder) in lists or isinstance(holder, types.FrameType):
             continue
         raise LookupError("referenced: " + type(holder).__name__)
+
+
+def _add(module, scope, name, code, defaults, kwdefaults, annotations, doc):
+    """Set a plain method on its class as the patched class body would define it. Raise
+    unless the class and every class above or below it is made by type itself with no
+    __init_subclass__ (a metaclass or hook could act on the class's members when it is made)."""
+    target = module
+    for part in scope.split("."):
+        target = vars(target)[part]
+    if not isinstance(target, type) or name in vars(target):
+        raise LookupError(scope)
+    seen, stack = set(), list(target.__mro__[:-1])
+    while stack:
+        cls = stack.pop()
+        if cls in seen:
+            continue
+        seen.add(cls)
+        if type(cls) is not type or "__init_subclass__" in vars(cls) \
+                or "__getattr__" in vars(cls) or "__getattribute__" in vars(cls):
+            raise LookupError(cls.__qualname__)
+        stack.extend(type.__subclasses__(cls))
+    if target.__mro__[-1] is not object or code.co_qualname != scope + "." + name:
+        raise LookupError(scope)
+    if code.co_freevars == ():
+        closure = None
+    elif code.co_freevars == ("__class__",):
+        closure = (types.CellType(target),)
+    else:
+        raise LookupError(code.co_freevars)
+    func = types.FunctionType(code, module.__dict__, name, defaults, closure)
+    func.__qualname__ = code.co_qualname
+    func.__kwdefaults__ = kwdefaults
+    func.__annotations__ = annotations
+    func.__doc__ = doc
+    setattr(target, name, func)
 
 
 def _serve_fixtures(base, texts):
