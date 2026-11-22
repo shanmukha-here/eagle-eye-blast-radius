@@ -58,6 +58,8 @@ class Zygote:
             return self.process is not None
         env = dict(os.environ)
         env["PYTHONPATH"] = HERE
+        # Plan digests are recorded with hash seed 0; some plans follow string-set order.
+        env["PYTHONHASHSEED"] = "0"
         try:
             self.process = subprocess.Popen(
                 [sys.executable, "-B", "-c", "import zexec; zexec.serve()"],
@@ -101,14 +103,14 @@ class Zygote:
         number = {self.ids[n]: n for n in tests}
         return {number[t] for t in failed}, {number[t] for t in done}
 
-    def tpc(self, patch, queries, budget, wall, expected=()):
+    def tpc(self, patch, queries, budget, wall, expected=(), rows=True):
         """Digests of the given (name, index) TPC queries on the patched code, or None. The
         replay stops after the first digest that differs from ``expected``."""
         if not self.start():
             return None
         try:
-            _send(self.process.stdin, ("tpc", patch, list(queries), list(expected), float(budget),
-                                       float(wall)))
+            _send(self.process.stdin, ("tpc" if rows else "tpcplan", patch, list(queries),
+                                       list(expected), float(budget), float(wall)))
             reply = self._wait(wall + 60.0)
         except (OSError, EOFError, ValueError):
             self.close()
@@ -253,7 +255,7 @@ def serve():
 
     reindex()
     runner = zrun.Runner(found)
-    tpc_state = None
+    tpc_states = {}
     _send(stdout, "ready")
     while True:
         try:
@@ -261,16 +263,18 @@ def serve():
         except EOFError:
             break
         kind = "tests"
-        if job[0] == "tpc":
+        if job[0] in ("tpc", "tpcplan"):
             kind, job = job[0], job[1:]
-            if tpc_state is None:
+            if kind not in tpc_states:
                 try:
                     ensure([TPC_TEST])
                     import ztpc_units
-                    tpc_state = ztpc_units.Tables()
+                    # Plan replays need the queries only, not the table rows.
+                    tpc_states[kind] = ztpc_units.Tables(rows=kind == "tpc")
                     reindex()
                 except Exception:
-                    tpc_state = False
+                    tpc_states[kind] = False
+            tpc_state = tpc_states[kind]
             if tpc_state is False:
                 _send(stdout, None)
                 continue
@@ -289,14 +293,17 @@ def serve():
             try:
                 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
                 _apply(base, patch, index)
-                if kind == "tpc":
+                if kind in ("tpc", "tpcplan"):
                     import ztpc_units
                     digests = []
                     begin = time.process_time()
                     for k, (name, i) in enumerate(tests):
                         if time.process_time() - begin > budget:
                             break
-                        digests.append(ztpc_units.run_query(tpc_state, name, i))
+                        if kind == "tpc":
+                            digests.append(ztpc_units.run_query(tpc_state, name, i))
+                        else:
+                            digests.append(ztpc_units.split_query(tpc_state, name, i, rows=False)[0])
                         if k < len(limits) and digests[-1] != limits[k]:
                             break
                     payload = marshal.dumps((digests, time.process_time()))

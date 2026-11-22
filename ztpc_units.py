@@ -34,7 +34,7 @@ class Tables:
     """The executor tests' TPC fixtures, loaded the way their setUpClass loads them,
     without the DuckDB views that only the DuckDB side of the comparison uses."""
 
-    def __init__(self):
+    def __init__(self, rows=True):
         import ast
         import csv
         import tests.test_executor as te
@@ -61,9 +61,110 @@ class Tables:
 
         self.tpch_tables = {}
         self.tpcds_tables = {}
+        self.tpch_sqls = list(load_sql_fixture_pairs("optimizer/tpc-h/tpc-h.sql"))
+        self.tpcds_sqls = list(load_sql_fixture_pairs("optimizer/tpc-ds/tpc-ds.sql"))
+        if not rows:
+            return
         for table, columns in te.TPCH_SCHEMA.items():
             setup(te.DIR_TPCH, table, columns, self.tpch_tables)
         for table, columns in te.TPCDS_SCHEMA.items():
             setup(te.DIR_TPCDS, table, columns, self.tpcds_tables)
-        self.tpch_sqls = list(load_sql_fixture_pairs("optimizer/tpc-h/tpc-h.sql"))
-        self.tpcds_sqls = list(load_sql_fixture_pairs("optimizer/tpc-ds/tpc-ds.sql"))
+
+
+def _canon(value, steps):
+    from sqlglot import exp
+    from sqlglot.planner import Step
+
+    if isinstance(value, Step):
+        return ("S", steps[id(value)])
+    if isinstance(value, exp.Expr):
+        return ("E", pickle.dumps(value))
+    if isinstance(value, (set, frozenset)):
+        return ("set", sorted((_canon(v, steps) for v in value), key=repr))
+    if isinstance(value, dict):
+        return ("dict", [(_canon(k, steps), _canon(v, steps)) for k, v in value.items()])
+    if isinstance(value, (list, tuple)):
+        return (type(value).__name__, [_canon(v, steps) for v in value])
+    if isinstance(value, type):
+        return ("T", value.__module__, value.__qualname__)
+    if value is None or isinstance(value, (bool, int, float, str, bytes)):
+        return value
+    # Anything else may print an address, so the digest then differs from the pin's.
+    return ("O", type(value).__qualname__, repr(value))
+
+
+def plan_digest(plan):
+    """A digest of every field of every plan step, independent of set and address order."""
+    order = []
+    seen = {}
+
+    def visit(step):
+        if id(step) in seen:
+            return
+        seen[id(step)] = len(order)
+        order.append(step)
+        for child in sorted(step.dependencies, key=lambda s: (type(s).__name__, str(s.name))):
+            visit(child)
+
+    visit(plan.root)
+    fields = [(type(s).__qualname__, sorted((k, _canon(v, seen)) for k, v in vars(s).items()))
+              for s in order]
+    top = sorted((k, _canon(v, seen)) for k, v in vars(plan).items() if k != "_dag")
+    return hashlib.sha256(repr((fields, top)).encode()).digest()
+
+
+def split_query(state, name, i, rows=True, phase=None):
+    """The query as `sqlglot.executor.execute` runs it inside the test, in two phases.
+
+    Returns (plan digest, full digest). The plan digest covers everything up to the row
+    execution: the parse, the schema check, the optimized expression and its SQL text, the
+    plan and the DuckDB transpilation. Row execution (`ensure_tables` and `PythonExecutor`)
+    reads only the plan and the tables, so with unchanged code there it repeats the pin's
+    result. ``phase(True|False)`` marks entering and leaving the row phase. With
+    ``rows=False`` the row phase is skipped and the full digest is None.
+    """
+    import sqlglot.executor as ex
+    import tests.test_executor as te
+    from sqlglot import parse_one, transpile
+
+    if name == "tpcds":
+        sqls, schema = state.tpcds_sqls, te.TPCDS_SCHEMA
+    else:
+        sqls, schema = state.tpch_sqls, te.TPCH_SCHEMA
+    meta, sql, _ = sqls[i]
+    pre = hashlib.sha256()
+    full = hashlib.sha256()
+    sent = pickle.dumps(parse_one(sql))
+    pre.update(sent)
+    full.update(sent)
+    if not meta.get("execute"):
+        return pre.hexdigest(), full.hexdigest()
+    expression = pickle.loads(sent)
+    names = [t.name for t in te.find_tables(expression)]
+    tables_ = None
+    if rows:
+        tables = state.tpcds_tables if name == "tpcds" else state.tpch_tables
+        chosen = {n: tables[n] for n in names}
+        phase and phase(True)
+        tables_ = ex.ensure_tables(chosen, dialect=None)
+        phase and phase(False)
+    checked = ex.ensure_schema(schema, dialect=None)
+    pre.update(repr(checked.supported_table_args).encode())
+    if tables_ is not None and tables_.supported_table_args \
+            and tables_.supported_table_args != checked.supported_table_args:
+        raise ex.ExecuteError("Tables must support the same table args as schema")
+    optimized = ex.optimize(expression, checked, leave_tables_isolated=True, dialect=None)
+    pre.update(pickle.dumps(optimized))
+    pre.update(optimized.sql(pretty=True).encode())
+    plan = ex.Plan(optimized)
+    pre.update(plan_digest(plan))
+    duck = transpile(sql, write="duckdb")[0].encode()
+    pre.update(duck)
+    if not rows:
+        return pre.hexdigest(), None
+    phase and phase(True)
+    table = ex.PythonExecutor(tables=tables_).execute(plan)
+    phase and phase(False)
+    full.update(pickle.dumps(table))
+    full.update(duck)
+    return pre.hexdigest(), full.hexdigest()

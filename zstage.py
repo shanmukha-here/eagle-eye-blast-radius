@@ -239,6 +239,9 @@ LONG_MS = 3000
 # equal to the simulated time they save, so both are off.
 REPLAY_LONG = False
 REFINE_SHORT = False
+# Replay TPC queries up to row execution only, when no affected query runs changed code there.
+REPLAY_PLANS = True
+PLAN_CPU = 1.0
 
 
 class Execute:
@@ -267,17 +270,21 @@ class Execute:
                     continue
                 coded = [(set(map(tuple, c)), d, t) for c, d, t in units]
                 covered = set().union(*(c for c, _, _ in coded))
-                self.tpc_units[number] = (name, coded, covered, data.get("lines", {}).get(name))
+                split = data.get("split", {}).get(name)
+                if split is not None:
+                    split = [(set(map(tuple, r)), pre, cpu) for r, pre, cpu in split]
+                self.tpc_units[number] = (name, coded, covered, data.get("lines", {}).get(name), split)
         except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
             self.tpc = None
 
     def replay_long(self, raw, plan, mask, changed, ranges=None):
         """Drop a TPC executor test when every query that starts changed code digests the same."""
-        if not REPLAY_LONG or self.tpc is None or not plan or time.monotonic() > self.deadline - 10:
+        if not (REPLAY_LONG or REPLAY_PLANS) or self.tpc is None or not plan \
+                or time.monotonic() > self.deadline - 10:
             return plan
         s = self.scheduler
         selected = {n for group in plan for n in group}
-        for number, (name, units, covered, lines) in self.tpc_units.items():
+        for number, (name, units, covered, lines, split) in self.tpc_units.items():
             if number not in selected or changed & self.tpc_setup:
                 continue
             bit = 1 << number
@@ -300,10 +307,24 @@ class Execute:
             affected = [i for i in range(len(units)) if reach >> i & 1]
             # The test is a candidate, so it ran the edit; if no query did, setup or code
             # outside the queries did, and replaying queries proves nothing.
-            if not affected or any(units[i][1] is None for i in affected):
+            if not affected:
                 continue
-            # Traced query CPU includes the tracer; replays use about 0.6 of it.
-            estimate = 0.1 + 0.6 * sum(units[i][2] for i in affected)
+            # Row execution reads only the plan and tables. When no affected query started
+            # changed code there, equal plan digests give equal tables.
+            rows = not (REPLAY_PLANS and split is not None
+                        and not any(k[0] == "sqlglot/executor/__init__.py" or k[0].startswith("tests/")
+                                    for k in changed)
+                        and all(split[i][1] is not None and not split[i][0] & changed for i in affected))
+            if rows and (not REPLAY_LONG or any(units[i][1] is None for i in affected)):
+                self.stats[name + "_rows"] = True
+                continue
+            if rows:
+                # Traced query CPU includes the tracer; replays use about 0.6 of it.
+                estimate = 0.1 + 0.6 * sum(units[i][2] for i in affected)
+                expected = [units[i][1] for i in affected]
+            else:
+                estimate = 0.1 + PLAN_CPU * sum(split[i][2] for i in affected)
+                expected = [split[i][1] for i in affected]
             rest = selected - {number}
             after = s.repack(rest, plan) if rest else []
             upside = (s.cost(plan) - s.cost(after)) / 1000
@@ -313,13 +334,13 @@ class Execute:
                 continue
             wall = min(self.deadline - time.monotonic(), 10.0 + 3.0 * estimate)
             digests = self.zygote.tpc(raw, [(name, i) for i in affected], 2.0 * estimate + 1.0, wall,
-                                      [units[i][1] for i in affected])
+                                      expected, rows=rows)
             self.remaining -= max(estimate, self.zygote.last_cpu)
             self.stats[name + "_cpu"] = round(self.zygote.last_cpu, 3)
             if digests is None or len(digests) != len(affected):
                 self.stats[name + "_replay"] = "incomplete"
                 continue
-            same = all(d == units[i][1] for d, i in zip(digests, affected))
+            same = digests == expected
             self.stats[name + "_replay"] = "same" if same else "changed"
             if same:
                 selected = rest
