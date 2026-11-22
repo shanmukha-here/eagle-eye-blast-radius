@@ -49,6 +49,12 @@ class Candidates:
             self.classes = marshal.loads(lzma.decompress(Path(map_path).with_name("zclass.xz").read_bytes()))
         except (OSError, ValueError, EOFError, lzma.LZMAError):
             self.classes = None
+        self.fixtures = None
+        try:
+            self.fixtures = marshal.loads(lzma.decompress(Path(map_path).with_name("zfix.xz").read_bytes()))
+            self.fixtures["collect"] = set(self.fixtures["collect"])
+        except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
+            self.fixtures = None
         self.inverted = None
         self.by_name = {}
         for key in list(self.masks) + list(self.preload):
@@ -157,6 +163,17 @@ class Candidates:
         member_files = {}
         ranges_out = {}
         for path, hunks in files.items():
+            if path.startswith("tests/fixtures/") and not path.endswith(".py"):
+                # A data file reaches only the tests that open it while they run.
+                if self.fixtures is None or path in self.fixtures["collect"]:
+                    return None
+                try:
+                    patched(self.source(path), hunks, physical=True)
+                except (OSError, UnicodeError, UnknownChange, ValueError):
+                    return None
+                mask |= self.fixtures["opens"].get(path, 0)
+                executable = False
+                continue
             if not (path.startswith("sqlglot/") and path.endswith(".py")):
                 return None
             try:
@@ -218,8 +235,9 @@ class Candidates:
 
 WALL0 = time.monotonic()
 LONG_MS = 3000
-# Stages that run tests in the zygote; each is worth its CPU only where it removes workers.
-REPLAY_LONG = True
+# Stages that run tests in the zygote. Gates on hidden-like batches showed their CPU about
+# equal to the simulated time they save, so both are off.
+REPLAY_LONG = False
 REFINE_SHORT = False
 
 
