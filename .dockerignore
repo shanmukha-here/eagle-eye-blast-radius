@@ -13,9 +13,6 @@
 !checkpoint.py
 !optimizer_probe.py
 !replay_index.z
-!tools/
-tools/*
-!tools/build_replays.py
 !reach.py
 !observed.py
 !observers.z
@@ -26,7 +23,6 @@ tools/*
 !startup.py
 !startup.z
 !memory_index.z
-!tools/build_tpch_sql.py
 !stress.z
 !query_lines.z
 !requirements.lock
@@ -48,16 +44,13 @@ tools/*
 !ready_imports.json
 !memo_witness.py
 !parser_signal.py
-!tools/build_unit_ready.py
 !query_values.z
 !values_eq.z
 !fixture_inputs.json
 
 !observation_file.py
-!tools/build_observation_file.py
 
 !surface.py
-!tools/build_project_readers.py
 
 !definition_metadata.py
 
@@ -65,7 +58,6 @@ tools/*
 
 !module_topology.py
 !tpcds_replay.py
-!tools/build_query_gate.py
 !receiver_edits.py
 !receiver.index
 !registry_guard.py
@@ -73,17 +65,11 @@ tools/*
 !precision.py
 !precision_body.py
 !precision_index.py
-!tools/trace_precision.py
-!tools/build_precision_index.py
-!tools/precision_startup.py
 !risk_features.py
 !risk_model.py
 !risk_policy.py
 !risk_model.bin
-!tools/build_risk_names.py
 !long_cases.py
 !recovery.py
-!tools/build_long_cases.py
-!tools/build_import_closure.py
 !cold_import.py
-!tools/build_cold_import_index.py
+!build-maps.tar.xz
