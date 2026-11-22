@@ -241,7 +241,7 @@ REPLAY_LONG = False
 REFINE_SHORT = False
 # Replay TPC queries up to row execution only, when no affected query runs changed code there.
 REPLAY_PLANS = True
-PLAN_CPU = 0.8
+PLAN_CPU = 0.35
 
 
 class Execute:
