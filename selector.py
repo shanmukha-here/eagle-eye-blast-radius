@@ -549,7 +549,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             # other replay runs (every test counts as unswapped).
             swapped[i] = raw, mask, found[2], found[4], found[5] | found[0] | 1, found[6]
     order = sorted(swapped, key=lambda i: -scheduler.cost(planned[i][2]))
-    # Tests whose affected fixture cases failed or did not finish in the zygote.
+    # Tests that failed or did not finish in the zygote (affected fixture cases or whole tests).
     case_kept = {}
     try:
         for i in order:
@@ -560,11 +560,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             executor.case_kept = set()
             plan = executor.replay_long(raw, plan, mask, changed, ranges, unswapped)
             plan = executor.replay_cases(raw, plan, mask, changed, ranges, unswapped, items)
-            if executor.case_kept:
-                case_kept[i] = executor.case_kept
             long_stats = executor.stats
             if not unswapped:
                 plan = executor.refine(raw, plan, mask)
+            if executor.case_kept:
+                case_kept[i] = executor.case_kept
             executor.stats.update(long_stats)
             if report:
                 stats.update(executor.stats)

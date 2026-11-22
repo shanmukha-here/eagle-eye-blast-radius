@@ -944,6 +944,8 @@ class Execute:
         failed, done = result
         passed = done - failed
         self.stats.update(swap_exec_passed=len(passed), swap_exec_failing=len(failed))
+        # A fresh-import run of a test that failed here would only repeat the failure.
+        self.case_kept |= failed
         if not passed or (EMPTY_ONLY and passed != selected):
             return plan
         keep = selected - passed
