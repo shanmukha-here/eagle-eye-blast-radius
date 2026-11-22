@@ -129,7 +129,7 @@ class PatchedTests:
         self.deadline = time.monotonic() + (125 if count <= 40 else 185)
         self.available = len(os.listdir("/proc/self/task")) == 1
         self.precision = precision
-        self.warm = WarmTests(self.base, profile.nodes.values())
+        self.warm = WarmTests(self.base)
         self.fixture_warm = WarmTests(self.base, dependencies=("duckdb", "pandas"))
         self.stats = {}
 
@@ -262,8 +262,9 @@ class PatchedTests:
                                           patched_overlay=overlay_cpu, patched_import=imported, patched_tests=tests)
                         known_passes.update(certified)
                         return self.scheduler.repack(selected - certified, plan) if certified else plan
-                if names in attempted:
+                if names in attempted or cap - overlay_cpu - warm_cpu < 0.15:
                     return plan
+                cap -= warm_cpu
                 recv, send = self.context.Pipe(duplex=False)
                 with recv, send:
                     process = self.context.Process(target=execute, args=(send, root, names, cap - overlay_cpu, bare))

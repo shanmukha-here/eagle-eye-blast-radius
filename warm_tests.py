@@ -39,6 +39,7 @@ def load(base, modules):
     monitor.use_tool_id(tool, "patched test preload")
     event = monitor.events.PY_START
     monitor.register_callback(tool, event, start)
+    monitor.restart_events()
     monitor.set_events(tool, event)
     try:
         for module in modules:
@@ -130,6 +131,15 @@ def server(duplex, base, modules):
                 return
             root, names, changes, cap = request
             started = seconds()
+            if changes:
+                missing = {node.partition("::")[0][:-3].replace("/", ".") for node in names}
+                missing.difference_update(sys.modules)
+                if missing:
+                    entered, functions = load(base, sorted(missing))
+                    if entered is None or len(os.listdir("/proc/self/task")) != 1:
+                        duplex.send((None, seconds() - started))
+                        return
+                    called.update(entered)
             recv, send = duplex_context().Pipe(duplex=False)
             with recv, send:
                 pid = os.fork()
@@ -166,10 +176,9 @@ def duplex_context():
 
 
 class WarmTests:
-    def __init__(self, base, nodes=(), dependencies=()):
+    def __init__(self, base, dependencies=()):
         self.base = base
-        test_modules = sorted({node.partition("::")[0][:-3].replace("/", ".") for node in nodes})
-        self.modules = ("sqlglot", *dependencies, *test_modules)
+        self.modules = ("sqlglot", *dependencies)
         self.proc = self.conn = None
         self.disabled = False
 
