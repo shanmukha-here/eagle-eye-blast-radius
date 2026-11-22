@@ -175,12 +175,12 @@ class ObservationIndex:
                 return None
             if path not in self.details.lines:
                 return None
-            source, (old, (outer, _), _) = self.original(path)
+            source, (old, (outer, original_scopes), _) = self.original(path)
             modified = patched(source, hunks)
             external = (self.impact.files.get(path, {}).get(0, 0) |
                         self.details.flow.opaque | self.details.positions)
             try:
-                after, (revised_outer, _), _ = syntax(path, modified)
+                after, (revised_outer, revised_scopes), _ = syntax(path, modified)
             except SyntaxError:
                 imports = self.details.imports.get(path, 0)
                 dialects = self.details.dialects.get(path, 0)
@@ -189,7 +189,18 @@ class ObservationIndex:
                 affected = (external | imports | dialects | self.references.get(path, 0) |
                             self.impact.visitors.get(path, 0))
                 return "syntax", affected
-            comparisons = comparison_changes(old, after) if outer == revised_outer else []
+            bodies = []
+            if outer == revised_outer and original_scopes.keys() == revised_scopes.keys():
+                bodies = [(prior[3], revised_scopes[site][3])
+                          for site, prior in original_scopes.items()
+                          if prior[2] != revised_scopes[site][2]]
+            comparisons = []
+            for before_body, after_body in bodies:
+                edits = comparison_changes(before_body, after_body)
+                if not edits:
+                    comparisons.clear()
+                    break
+                comparisons.extend(edits)
             if comparisons:
                 affected = external
                 for compare, left, right in comparisons:
@@ -205,7 +216,13 @@ class ObservationIndex:
                     affected |= self.details.lines[path].get(compare.lineno, self.impact.full) & ~covered
                 else:
                     return "comparison", affected
-            scalar = replacements(old, after) if outer == revised_outer else []
+            scalar = []
+            for before_body, after_body in bodies:
+                edits = replacements(before_body, after_body, within_function=isinstance(before_body, ast.Module))
+                if not edits:
+                    scalar.clear()
+                    break
+                scalar.extend(edits)
             if scalar:
                 affected = external
                 for previous, revised, names, predicate in scalar:
