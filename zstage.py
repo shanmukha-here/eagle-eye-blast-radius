@@ -388,7 +388,7 @@ def swap_text(text):
     return out if out.endswith("\n") or not out else out + "\n"
 
 
-VALUE_MIN_GAIN = 1.5
+VALUE_MIN_GAIN = 4.0
 # Dunders that Python only looks up to call. Deleting one changes only the calls that started
 # it; the value diff checks the class dict for side effects such as an implicit __hash__.
 PROTOCOL_DUNDERS = {
