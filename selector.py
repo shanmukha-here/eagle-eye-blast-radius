@@ -291,9 +291,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             stats["cpu"] += stats.get("patched_cpu", 0.0)
             stats["startup"] = 2 * len(plan)
             stats["busiest"] = (scheduler.cost(plan) - 2000 * len(plan)) / 1000
-            print(json.dumps(stats, separators=(",", ":")), file=sys.stderr)
-        workers = json.dumps(plan, separators=(",", ":"))
-        sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
+        return path.stem, plan, stats
 
     def emit(path, plan, beginning, text=None, verified=False, replay=None):
         recovered = None if verified else recovery.declarations(text)
@@ -512,20 +510,42 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     cold_tests.remaining = patched_tests.remaining
     cold_tests.warm.disabled = cold_tests.fixture_warm.disabled = True
     lanes = [ExecutionLane(engine, long_cases.tests) for engine in (patched_tests, cold_tests)]
+    def priority(record):
+        _, text, plan, _, passed, _, _ = record
+        if not text or not plan:
+            return 0.0
+        selected = {n for worker in plan for n in worker}
+        candidates = {n for n in selected - passed
+                      if scheduler.durations[n] < 3000 and scheduler.bits[n]}
+        if not candidates:
+            return 0.0
+        remaining = scheduler.repack(selected - candidates, plan)
+        saving = (scheduler.cost(plan) - scheduler.cost(remaining)) / 1000
+        return saving / patched_tests.estimate(candidates)
+
+    queue = sorted(enumerate(planned), key=lambda job: -priority(job[1]))
     pending = deque()
+    outputs = [None] * len(planned)
     try:
-        for index, record in enumerate(planned):
+        for rank, (index, record) in enumerate(queue):
             if len(pending) == len(lanes):
-                finish(*pending.popleft())
+                completed, prior, checker = pending.popleft()
+                outputs[completed] = finish(prior, checker)
             _, text, plan, _, passed, attempted, _ = record
-            lane = lanes[index % len(lanes)]
+            lane = lanes[rank % len(lanes)]
             launched = lane.submit(text, plan, passed, attempted)
-            pending.append((record, lane if launched else None))
+            pending.append((index, record, lane if launched else None))
         while pending:
-            finish(*pending.popleft())
+            completed, prior, checker = pending.popleft()
+            outputs[completed] = finish(prior, checker)
     finally:
         for lane in lanes:
             lane.close()
+    for commit, plan, stats in outputs:
+        if report:
+            print(json.dumps(stats, separators=(",", ":")), file=sys.stderr)
+        workers = json.dumps(plan, separators=(",", ":"))
+        sys.stdout.write('{"commit":' + json.dumps(commit) + ',"workers":' + workers + '}\n')
     if report and cold_file.is_file():
         print(json.dumps(dict(cold_import_checks_skipped=impact.details.cold_import.shortcuts)), file=sys.stderr)
 
