@@ -49,6 +49,7 @@ class Zygote:
         self.deadline = deadline
         self.process = None
         self.cpu = 0.0
+        self.last_cpu = 0.0
         self.failed = False
 
     def start(self):
@@ -93,7 +94,9 @@ class Zygote:
             return None
         if reply is None:
             return None
-        failed, done = reply
+        failed, done, cpu = reply
+        self.cpu += cpu
+        self.last_cpu = cpu
         number = {self.ids[n]: n for n in tests}
         return {number[t] for t in failed}, {number[t] for t in done}
 
@@ -108,7 +111,12 @@ class Zygote:
             self.close()
             self.failed = True
             return None
-        return reply
+        if reply is None:
+            return None
+        digests, cpu = reply
+        self.cpu += cpu
+        self.last_cpu = cpu
+        return digests
 
     def close(self):
         if self.process is not None:
@@ -117,8 +125,10 @@ class Zygote:
             except OSError:
                 pass
             try:
-                self.process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
+                _, status, usage = os.wait4(self.process.pid, 0)
+                self.total_cpu = usage.ru_utime + usage.ru_stime
+                self.process.returncode = status
+            except (OSError, ChildProcessError):
                 self.process.kill()
                 self.process.wait()
             self.process = None
@@ -260,11 +270,11 @@ def serve():
                         if time.process_time() - begin > budget:
                             break
                         digests.append(ztpc_units.run_query(tpc_state, name, i))
-                    payload = marshal.dumps(digests)
+                    payload = marshal.dumps((digests, time.process_time()))
                 else:
                     runnable = [t for t in tests if t in found]
                     failed, done = runner.run(runnable, dict(zip(tests, limits)), stop_after=budget)
-                    payload = marshal.dumps((sorted(failed), sorted(done)))
+                    payload = marshal.dumps((sorted(failed), sorted(done), time.process_time()))
                 code = 0
             except BaseException:
                 if os.environ.get("ZEXEC_DEBUG"):

@@ -148,7 +148,8 @@ class Execute:
                 continue
             wall = min(self.deadline - time.monotonic(), 10.0 + 3.0 * estimate)
             digests = self.zygote.tpc(raw, [(name, i) for i in affected], 2.0 * estimate + 1.0, wall)
-            self.remaining -= estimate
+            self.remaining -= max(estimate, self.zygote.last_cpu)
+            self.stats[name + "_cpu"] = round(self.zygote.last_cpu, 3)
             if digests is None or len(digests) != len(affected):
                 self.stats[name + "_replay"] = "incomplete"
                 continue
@@ -181,8 +182,8 @@ class Execute:
         wall = min(self.deadline - time.monotonic(), 2.0 + 4.0 * estimate)
         begin = _cpu()
         result = self.zygote.run(raw, tests, limits, 2.0 * estimate + 0.5, wall)
-        spent = _cpu() - begin
-        self.remaining -= max(spent, estimate)
+        self.remaining -= max(self.zygote.last_cpu, estimate)
+        self.stats["swap_exec_cpu"] = round(self.zygote.last_cpu, 3)
         if result is None:
             self.stats["swap_exec_failed"] = True
             return plan
@@ -197,6 +198,7 @@ class Execute:
     def close(self):
         if self.zygote is not None:
             self.zygote.close()
+            return getattr(self.zygote, "total_cpu", None)
 
 
 def _cpu():

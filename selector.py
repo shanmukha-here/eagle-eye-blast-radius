@@ -543,7 +543,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 stats["cpu"] += seconds() - begin
             planned[i] = path, text, plan, nearby, passed, attempted, stats
     finally:
-        executor.close()
+        zygote_cpu = executor.close()
+        if report:
+            print(json.dumps(dict(zygote_cpu=zygote_cpu)), file=sys.stderr)
     # Complete discovery before starting proofs. A native import check can
     # fail closed if an overlapping test consumes its short wall allowance.
     cold_tests = PatchedTests(scheduler, verify, base, len(patches), precision)
