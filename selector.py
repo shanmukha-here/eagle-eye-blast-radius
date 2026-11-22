@@ -349,10 +349,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     declaration=recovered is not None or bool(precision.stats.get("recovery_replaces")),
                 )
                 budget.execution_cpu += long_cases.stats.get("recovery_long_cpu", 0.0)
-            checked = verify.certify_small(text, plan, precision.short_certificate)
-            if checked != plan:
-                precision.stats["small_clean_cohort"] = sum(map(len, plan))
-                plan = checked
         stats = {}
         if report:
             stats = dict(commit=path.stem, cpu=seconds() - beginning,
@@ -424,12 +420,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     plan = scheduler.plan(mask)
                     with PatchWorkspace(base.resolve(), text) as workspace:
                         plan = long_cases.apply(text, plan, workspace, budget.cap, declaration=True)
-                        if plan and all(scheduler.durations[n] < 3000 for w in plan for n in w):
-                            checked = verify.refine(text, plan, workspace=workspace)
-                            # Definition-time behavior can change even when
-                            # the candidate methods pass their assertions.
-                            if checked:
-                                plan = checked
                     precision.stats["import_recovery"] = mask.bit_count()
                     precision.stats["recovery_replaces"] = True
                     emit(path, plan, beginning, risk_text, verified=True)
@@ -445,14 +435,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     plan = scheduler.plan(local)
                     with PatchWorkspace(base.resolve(), text) as workspace:
                         plan = long_cases.apply(text, plan, workspace, budget.cap)
-                        if plan and precision.short_certificate(text):
-                            cpu = seconds() if report else 0.0
-                            before_count = sum(map(len, plan))
-                            plan = verify.refine(text, plan, workspace=workspace, short_only=True)
-                            if not plan:
-                                precision.stats["short_certified"] = before_count
-                            if report:
-                                precision.stats["short_cpu"] = round(seconds() - cpu, 6)
                     emit(path, plan, beginning, risk_text, verified=True)
                     continue
                 if direct is not None:
@@ -467,7 +449,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                             emit(path, [], beginning, risk_text)
                             continue
                         plan = references.apply(text, observed_plan)
-                        plan = verify.refine(text, plan)
+                        if any(scheduler.durations[n] >= 3000 for w in plan for n in w):
+                            plan = verify.refine(text, plan)
                         emit(path, plan, beginning, risk_text, verified=kind in ("metadata", "fixture"))
                         continue
                 with PatchWorkspace(base.resolve(), text) as workspace:
@@ -516,16 +499,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                         if unexecuted_return(impact, text, parser_bit):
                             retained = {n for group in plan for n in group if n != parser_id}
                             plan = scheduler.repack(retained, plan)
-                    short_only = bool(plan) and all(scheduler.durations[n] < 3000 for group in plan for n in group)
-                    if short_only and precision.short_certificate(text):
-                        cpu = seconds() if report else 0.0
-                        checked = verify.refine(text, plan, workspace=workspace, short_only=True)
-                        if not checked:
-                            precision.stats["short_certified"] = sum(map(len, plan))
-                        if report:
-                            precision.stats["short_cpu"] = round(seconds() - cpu, 6)
-                        plan = checked
-                    else:
+                    if any(scheduler.durations[n] >= 3000 for group in plan for n in group):
                         plan = verify.refine(text, plan, workspace=workspace)
         except UnicodeError:
             plan = fallback_plan

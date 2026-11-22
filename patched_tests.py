@@ -1,5 +1,6 @@
 """Certify individual short tests against a bounded patched checkout."""
 
+import ast
 from collections import defaultdict
 from contextlib import suppress
 import multiprocessing
@@ -138,10 +139,18 @@ class PatchedTests:
                 _, (revised, after), _ = syntax(path, patched(source, hunks))
                 if outer != revised or original.keys() != after.keys():
                     return None
-                names = tuple(".".join(site[:-1]) for site in original
-                              if original[site][2] != after[site][2])
+                names = []
+                for site, previous in original.items():
+                    current = after[site]
+                    if previous[2] == current[2]:
+                        continue
+                    if (not isinstance(previous[3], ast.Module)
+                            or ast.get_docstring(previous[3], clean=False)
+                            != ast.get_docstring(current[3], clean=False)):
+                        return None
+                    names.append(".".join(site[:-1]))
                 if names:
-                    changes[path] = names
+                    changes[path] = tuple(names)
         except (OSError, SyntaxError, UnknownChange, ValueError, RecursionError):
             return None
         return changes
