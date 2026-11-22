@@ -125,7 +125,7 @@ class PatchedTests:
         if profile_path.is_file():
             with profile_path.open("rb") as file:
                 self.grouped = mmap(file.fileno(), 0, access=ACCESS_READ)
-        self.remaining = min(55.0, count * 1.15)
+        self.remaining = min(15.0, count * 0.20)
         self.deadline = time.monotonic() + (125 if count <= 40 else 185)
         self.available = len(os.listdir("/proc/self/task")) == 1
         self.precision = precision
@@ -303,7 +303,14 @@ def lane(conn, engine):
             if message is None:
                 break
             text, plan, long_tests, passed, attempted = message
+            baseline = engine.scheduler.cost(plan)
             plan = engine.refine(text, plan, long_tests, passed, attempted)
+            saving = (baseline - engine.scheduler.cost(plan)) / 1000
+            spent = engine.stats.get("patched_cpu", 0.0)
+            if saving > spent:
+                # Charge the exploration allowance for unsuccessful work.
+                # Reinvest part of work already paid back by the schedule.
+                engine.remaining += 0.80 * spent
             conn.send((plan, passed, engine.stats))
     except (EOFError, OSError):
         pass
