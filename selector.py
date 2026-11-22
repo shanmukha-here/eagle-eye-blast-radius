@@ -321,7 +321,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 precision.stats["small_clean_cohort"] = sum(map(len, plan))
                 plan = checked
             plan = patched_tests.refine(text, plan, long_cases.tests.keys(), verify.passed)
-            budget.execution_cpu += patched_tests.stats.get("patched_cpu", 0.0)
+            budget.execution_cpu += patched_tests.stats.get("patched_parent_cpu", 0.0)
             if plan:
                 insured = scheduler.insure(plan, insurance_scope(text), verify.passed)
                 if insured is not plan:
@@ -342,7 +342,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     surface = Surface(impact, map_path.parent, observation.references)
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
     verify = ExactTests(scheduler, tests, base, len(patches), map_path.with_name("unit_ready.json"))
-    patched_tests = PatchedTests(scheduler, verify, base, len(patches))
+    patched_tests = PatchedTests(scheduler, verify, base, len(patches), precision)
     for check in (impact.details.replay,
                   incumbent.details.replay, impact.details.miniatures,
                   execution, gate, references, verify):
@@ -505,6 +505,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         except UnicodeError:
             plan = fallback_plan
         emit(path, plan, beginning, risk_text)
+    patched_tests.warm.close()
     if report and cold_file.is_file():
         print(json.dumps(dict(cold_import_checks_skipped=impact.details.cold_import.shortcuts)), file=sys.stderr)
 

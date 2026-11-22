@@ -41,6 +41,7 @@
 !reference_reads.json
 !exact_tests.py
 !patched_tests.py
+!warm_tests.py
 !isolated_cpu.bin
 !ready_imports.json
 !memo_witness.py

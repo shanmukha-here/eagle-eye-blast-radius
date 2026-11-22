@@ -12,6 +12,8 @@ from cpu_budget import seconds
 from decision import PatchWorkspace
 from exact_tests import run_unittests
 from impact import UnknownChange, split_diff
+from precision_body import footprint
+from warm_tests import WarmTests
 
 
 PHASES = {"setup", "call", "teardown"}
@@ -110,7 +112,7 @@ def stop(process):
 
 
 class PatchedTests:
-    def __init__(self, scheduler, profile, base, count):
+    def __init__(self, scheduler, profile, base, count, precision):
         self.scheduler = scheduler
         self.profile = profile
         self.base = base.resolve()
@@ -118,7 +120,18 @@ class PatchedTests:
         self.remaining = min(90.0, count * 1.8)
         self.deadline = time.monotonic() + (125 if count <= 40 else 185)
         self.available = len(os.listdir("/proc/self/task")) == 1
+        self.precision = precision
+        self.warm = WarmTests(self.base, profile.ready)
         self.stats = {}
+
+    def warm_shapes(self, patch, candidates):
+        changes = footprint(self.precision.impact, patch)
+        if changes is None or not self.precision.short_certificate(patch):
+            return None
+        if any(self.scheduler.bits[n] & self.precision.protected(changes) for n in candidates):
+            return None
+        return {path: tuple(".".join(site[:-1]) for site, _, _ in rows)
+                for path, rows in changes.items()}
 
     def refine(self, patch, plan, long_tests, known_passes):
         self.stats = {}
@@ -156,6 +169,7 @@ class PatchedTests:
         names = tuple(sorted(self.profile.nodes[n] for n in candidates))
         bare = all(name in self.profile.ready for name in names)
         self.stats = {"patched_candidates": len(names), "patched_unittest": bare}
+        warm_cpu = 0.0
         try:
             # A new import for every child avoids aliased objects from the pin.
             # Importing pytest once amortizes framework startup across commits.
@@ -169,6 +183,18 @@ class PatchedTests:
                 overlay_cpu = seconds() - begin
                 if cap - overlay_cpu < 0.15:
                     return plan
+                changes = self.warm_shapes(patch, candidates) if bare else None
+                if changes and not self.warm.disabled:
+                    result, cost, startup = self.warm.run(root, names, changes, cap - overlay_cpu, self.deadline)
+                    warm_cpu = cost + startup
+                    self.stats.update(patched_preload=startup, patched_warm_cpu=cost)
+                    if result is not None:
+                        passed, imported, tests = result
+                        certified = {self.profile.numbers[name] for name in passed} & candidates
+                        self.stats.update(patched_warm=True, patched_passed=len(certified),
+                                          patched_overlay=overlay_cpu, patched_import=imported, patched_tests=tests)
+                        known_passes.update(certified)
+                        return self.scheduler.repack(selected - certified, plan) if certified else plan
                 recv, send = self.context.Pipe(duplex=False)
                 with recv, send:
                     process = self.context.Process(target=execute, args=(send, root, names, cap - overlay_cpu, bare))
@@ -190,9 +216,10 @@ class PatchedTests:
         except (EOFError, KeyError, OSError, SyntaxError, UnknownChange, ValueError):
             pass
         finally:
-            spent = seconds() - begin
-            self.remaining -= spent
-            self.stats["patched_cpu"] = spent
+            charged = seconds() - begin
+            self.remaining -= charged + warm_cpu
+            self.stats["patched_cpu"] = charged + warm_cpu
+            self.stats["patched_parent_cpu"] = charged
             if "patched_passed" not in self.stats:
                 self.stats["patched_incomplete"] = True
         return plan

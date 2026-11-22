@@ -30,7 +30,7 @@ COPY precision.py precision_body.py ./
 COPY long_cases.py narrow.py cpu_budget.py ./
 COPY decision.py selector.py fixture_reads.json long_gate.py parser_signal.py surface.py definition_metadata.py ./
 COPY observation_index.py value_observations.py values.z values_eq.z ready_imports.json fixture_inputs.json ./
-COPY exact_tests.py patched_tests.py module_topology.py isolated_cpu.bin ./
+COPY exact_tests.py patched_tests.py warm_tests.py module_topology.py isolated_cpu.bin ./
 COPY reference_replay.py reference_reads.json ./
 COPY incumbent/ ./incumbent/
 COPY risk_features.py risk_model.py risk_policy.py risk_model.bin ./
