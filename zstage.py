@@ -31,7 +31,8 @@ class Candidates:
         self.masks = dict(zip(map(tuple, data["keys"]), data["masks"]))
         self.preload = set(map(tuple, data["preload"]))
         # Code that runs differently after earlier tests changed shared state.
-        self.preload.update(map(tuple, data.get("sensitive", ())))
+        self.sensitive = set(map(tuple, data.get("sensitive", ())))
+        self.preload.update(self.sensitive)
         self.opens = data["opens"]
         # Tests whose own trace is unusable stay in the incoming selection.
         self.opaque = data["failed"] | data["missing"]
@@ -55,6 +56,24 @@ class Candidates:
             self.fixtures["collect"] = set(self.fixtures["collect"])
         except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
             self.fixtures = None
+        self.values = None
+        try:
+            attr = marshal.loads(lzma.decompress(Path(map_path).with_name("zattr.xz").read_bytes()))
+            if attr["ids"] == self.ids:
+                self.values = {
+                    "map": str(Path(map_path).resolve().with_name("zval.xz")),
+                    "reads": dict(zip(map(tuple, attr["keys"]), attr["masks"])),
+                    "collect": set(map(tuple, attr["collect"])),
+                    "tracked": set(map(tuple, attr["tracked"])),
+                    "failed": attr["failed"],
+                    "globals": {tuple(k): [(tuple(c), f) for c, f in v] for k, v in attr["globals"].items()},
+                    "codes": None,
+                    "import_only": (set(map(tuple, attr.get("import_codes", ())))
+                                    - set(map(tuple, attr.get("collect_codes", ())))
+                                    - self.sensitive),
+                }
+        except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
+            self.values = None
         self.inverted = None
         self.by_name = {}
         for key in list(self.masks) + list(self.preload):
@@ -148,6 +167,69 @@ class Candidates:
             keys.append(tuple(key))
         return keys
 
+    def _value_mask(self, files):
+        """(mask, code keys) covering every test that can see a module or class value change
+        after importing ``files`` ({path: new text}) in place of the pin, or None."""
+        import subprocess
+        import sys
+        v = self.values
+        if v["codes"] is None:
+            try:
+                data = marshal.loads(lzma.decompress(Path(v["map"]).read_bytes()))
+            except (OSError, ValueError, EOFError, lzma.LZMAError):
+                self.stats["values_decline"] = "map"
+                return None
+            if data.get("python") != __import__("importlib.util").util.MAGIC_NUMBER:
+                self.stats["values_decline"] = "python"
+                return None
+            v["codes"] = {tuple(k): [tuple(c) for c in cs] for k, cs in data["codes"].items()}
+        here = os.path.dirname(os.path.abspath(__file__))
+        env = dict(os.environ, PYTHONHASHSEED="0", PYTHONDONTWRITEBYTECODE="1")
+        t0 = time.monotonic()
+        try:
+            out = subprocess.run([sys.executable, "-B", os.path.join(here, "zvalues.py")],
+                                 input=marshal.dumps((str(self.base.resolve()), v["map"], files)), env=env,
+                                 cwd=str(self.base.resolve()), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 timeout=30).stdout
+            result = marshal.loads(out)
+        except (OSError, ValueError, EOFError, subprocess.SubprocessError):
+            self.stats["values_decline"] = "child"
+            return None
+        self.stats["values_wall"] = round(time.monotonic() - t0, 3)
+        if not isinstance(result, tuple) or len(result) != 3 or result[0] == "error":
+            self.stats["values_decline"] = "error"
+            return None
+        changed, added, removed = result
+        self.stats["values_changed"] = len(changed)
+        if added or removed:
+            self.stats["values_decline"] = "added"
+            return None
+        mask, keys = v["failed"], []
+        for key in map(tuple, changed):
+            if key in v["collect"]:
+                self.stats["values_decline"] = "collect"
+                return None
+            codes = v["codes"].get(key)
+            if codes is not None:
+                # A function-like value acts only when its code runs.
+                keys.extend(codes)
+            if key[0] == "c":
+                if key in v["tracked"]:
+                    mask |= v["reads"].get(key, 0)
+                elif codes is None:
+                    self.stats["values_decline"] = "untracked"
+                    return None
+                continue
+            mask |= v["reads"].get(key, 0) | v["reads"].get(("m", key[1], "__dict__"), 0)
+            for code, is_function in v["globals"].get((key[1], key[2]), ()):
+                if code in self.preload:
+                    if is_function:
+                        self.stats["values_decline"] = "preload_fn"
+                        return None
+                    continue
+                mask |= self.masks.get(code, 0)
+        return mask, keys
+
     def analyze(self, text):
         """Return (mask of tests that may change, analyses) or None when unsupported."""
         if not self.ready or not text.endswith("\n"):
@@ -164,6 +246,7 @@ class Candidates:
         ranges_out = {}
         # Tests that fixture or member edits may reach; the zygote applies neither.
         unswapped = 0
+        texts = {}
         for path, hunks in files.items():
             if path.startswith("tests/fixtures/") and not path.endswith(".py"):
                 # A data file reaches only the tests that open it while they run.
@@ -182,13 +265,16 @@ class Candidates:
             try:
                 old = self.source(path)
                 new = patched(old, hunks, physical=True)
-                result = zpatch.analyze(path, old, new, str(self.base / path))
+                result = zpatch.analyze(path, old, new, str(self.base / path),
+                                        values=self.values is not None)
             except (OSError, UnicodeError, UnknownChange, zpatch.Unsupported, ValueError,
                     RecursionError, MemoryError, TypeError):
                 return None
             if result["added"] or result["removed"]:
                 member_files[path] = result["names"]
             results[path] = result
+            texts[path] = new
+        need_values = any(r["values"] for r in results.values())
         for path, result in results.items():
             hunks = files[path]
             old = result["old_text"]
@@ -228,13 +314,35 @@ class Candidates:
                 keys.extend(found)
             for key in keys:
                 if key in self.preload:
-                    return None
+                    # Code that ran only while importing sqlglot left its effects in values
+                    # that the value diff compares.
+                    if self.values is None or key not in self.values["import_only"]:
+                        return None
+                    need_values = True
                 if key in line_keys:
                     mask |= line_keys[key] & self.masks.get(key, 0)
                 else:
                     mask |= self.masks.get(key, 0)
                 changed.add(key)
             mask |= self.opens.get(path, 0)
+        if need_values:
+            found = self._value_mask(texts)
+            if found is None:
+                return None
+            # The zygote does not apply value edits, so these commits are not executed.
+            executable = False
+            mask |= found[0]
+            unswapped |= found[0]
+            value_keys = found[1]
+            for key in value_keys:
+                unswapped |= self.masks.get(key, 0)
+        else:
+            value_keys = []
+        for key in value_keys:
+            if key in self.preload and key not in self.values["import_only"]:
+                return None
+            mask |= self.masks.get(key, 0)
+            changed.add(key)
         return mask, results, changed, executable, ranges_out, unswapped
 
 
@@ -254,10 +362,10 @@ def swap_text(text):
 
 WALL0 = time.monotonic()
 LONG_MS = 3000
-# Stages that run tests in the zygote. Full short-test refinement cost about as much CPU as
-# the simulated time it saved on hidden-like batches.
+# Stages that run tests in the zygote. Short-test refinement cost more CPU than the simulated
+# time it saved in Docker (hidden-01: 48.9 CPU-s for about 19 s).
 REPLAY_LONG = True
-REFINE_SHORT = True
+REFINE_SHORT = False
 # Run short candidates only when all of a plan is short, stopping at the first failure: only
 # an empty plan saves enough (its workers' startup) to pay for the CPU.
 EMPTY_ONLY = True

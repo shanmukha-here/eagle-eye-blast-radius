@@ -215,8 +215,52 @@ def names(text, tree=None):
     return sorted(ids), sorted(strings), sorted(compared), sorted(loads)
 
 
-def analyze(path, old_text, new_text, filename):
-    """Return dict(changed=[keys], swaps=[(key, new_code)], docs=[...], defaults=[...])."""
+VALUE_STATEMENTS = (ast.Assign, ast.AnnAssign, ast.AugAssign)
+
+
+def _bound(node):
+    """Names a module or class assignment binds, or None if it binds anything else."""
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    out = []
+    for t in targets:
+        for n in ([t] if not isinstance(t, (ast.Tuple, ast.List)) else t.elts):
+            if not isinstance(n, ast.Name):
+                return None
+            out.append(n.id)
+    return out
+
+
+def _value_edits(old_body, new_body, scope, out):
+    """Collect (scope, names) of module and class assignments whose values differ between
+    two normalized bodies; raise Unsupported for any other difference."""
+    if len(old_body) != len(new_body):
+        raise Unsupported("structure")
+    for o, n in zip(old_body, new_body):
+        if ast.dump(o) == ast.dump(n):
+            continue
+        if isinstance(o, ast.ClassDef) and isinstance(n, ast.ClassDef):
+            head = lambda c: ast.dump(ast.ClassDef(name=c.name, bases=c.bases, keywords=c.keywords,  # noqa: E731
+                                                   body=[], decorator_list=c.decorator_list,
+                                                   type_params=getattr(c, "type_params", [])))
+            if head(o) != head(n):
+                raise Unsupported("structure")
+            _value_edits(o.body, n.body, scope + [o.name], out)
+            continue
+        if type(o) is not type(n) or not isinstance(o, VALUE_STATEMENTS):
+            raise Unsupported("structure")
+        names = _bound(o)
+        if names is None or names != _bound(n):
+            raise Unsupported("structure")
+        if isinstance(o, ast.AugAssign) and type(o.op) is not type(n.op):
+            raise Unsupported("structure")
+        out.append((".".join(scope), names))
+
+
+def analyze(path, old_text, new_text, filename, values=False):
+    """Return dict(changed=[keys], swaps=[(key, new_code)], docs=[...], defaults=[...]).
+
+    With ``values``, module and class assignments may also differ; they are listed under
+    "values" and the caller must compare the imported values."""
     try:
         old_tree = ast.parse(old_text)
         new_tree = ast.parse(new_text)
@@ -232,8 +276,11 @@ def analyze(path, old_text, new_text, filename):
         new_norm = ast.dump(b.visit(new_tree))
     except Exception as e:
         raise Unsupported("normalize") from e
+    edits = []
     if old_norm != new_norm:
-        raise Unsupported("structure")
+        if not values:
+            raise Unsupported("structure")
+        _value_edits(old_tree.body, new_tree.body, [], edits)
     docs = [(kind, name, doc) for (kind, name, doc), (_, _, old) in zip(b.docs, a.docs) if doc != old]
     defaults = []
     for (name, values, kw), (_, old_values, old_kw) in zip(b.defaults, a.defaults):
@@ -280,7 +327,7 @@ def analyze(path, old_text, new_text, filename):
             "added": [(scope, name, _passthrough(node)) for scope, name, node in added],
             "removed": [(scope, name, (path, (scope + "." if scope else "") + name, node.lineno))
                         for scope, name, node in removed],
-            "names": member_names}
+            "names": member_names, "values": edits}
 
 
 def changed_lines(hunks):
