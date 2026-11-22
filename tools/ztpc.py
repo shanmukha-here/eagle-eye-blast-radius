@@ -45,9 +45,20 @@ def on_start(code, offset):
     return mon.DISABLE
 
 
+lines = set()
+
+
+def on_line(code, line):
+    k = key(code)
+    if k is not None and k[0].startswith("sqlglot/"):
+        lines.add((k[0], line))
+    return mon.DISABLE
+
+
 mon.use_tool_id(TOOL, "ztpc")
 mon.register_callback(TOOL, mon.events.PY_START, on_start)
-mon.set_events(TOOL, mon.events.PY_START)
+mon.register_callback(TOOL, mon.events.LINE, on_line)
+mon.set_events(TOOL, mon.events.PY_START | mon.events.LINE)
 
 import zrun  # noqa: E402
 import ztpc_units  # noqa: E402
@@ -57,6 +68,7 @@ tests = {"tpcds": "tests/test_executor.py::TestExecutor::test_execute_tpcds",
 found, _ = zrun.load(ROOT, list(tests.values()))
 collect = sorted(codes)
 codes.clear()
+lines.clear()
 mon.restart_events()
 klass = found[tests["tpcds"]][0]
 klass.setUpClass()
@@ -72,12 +84,13 @@ for name in ("tpcds", "tpch"):
         if pid == 0:
             os.close(r)
             codes.clear()
+            lines.clear()
             mon.restart_events()
             t0 = time.process_time()
             digest = ztpc_units.run_query(klass, name, i)
             cpu = time.process_time() - t0
             with os.fdopen(w, "wb") as f:
-                f.write(marshal.dumps((sorted(codes), digest, cpu)))
+                f.write(marshal.dumps((sorted(codes), digest, cpu, sorted(lines))))
             os._exit(0)
         os.close(w)
         with os.fdopen(r, "rb") as f:

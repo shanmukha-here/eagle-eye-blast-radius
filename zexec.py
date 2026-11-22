@@ -101,12 +101,14 @@ class Zygote:
         number = {self.ids[n]: n for n in tests}
         return {number[t] for t in failed}, {number[t] for t in done}
 
-    def tpc(self, patch, queries, budget, wall):
-        """Digests of the given (name, index) TPC queries on the patched code, or None."""
+    def tpc(self, patch, queries, budget, wall, expected=()):
+        """Digests of the given (name, index) TPC queries on the patched code, or None. The
+        replay stops after the first digest that differs from ``expected``."""
         if not self.start():
             return None
         try:
-            _send(self.process.stdin, ("tpc", patch, list(queries), [], float(budget), float(wall)))
+            _send(self.process.stdin, ("tpc", patch, list(queries), list(expected), float(budget),
+                                       float(wall)))
             reply = self._wait(wall + 60.0)
         except (OSError, EOFError, ValueError):
             self.close()
@@ -291,10 +293,12 @@ def serve():
                     import ztpc_units
                     digests = []
                     begin = time.process_time()
-                    for name, i in tests:
+                    for k, (name, i) in enumerate(tests):
                         if time.process_time() - begin > budget:
                             break
                         digests.append(ztpc_units.run_query(tpc_state, name, i))
+                        if k < len(limits) and digests[-1] != limits[k]:
+                            break
                     payload = marshal.dumps((digests, time.process_time()))
                 else:
                     runnable = [t for t in tests if t in found]

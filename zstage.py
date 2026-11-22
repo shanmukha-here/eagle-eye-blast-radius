@@ -155,6 +155,7 @@ class Candidates:
         changed = set()
         executable = True
         member_files = {}
+        ranges_out = {}
         for path, hunks in files.items():
             if not (path.startswith("sqlglot/") and path.endswith(".py")):
                 return None
@@ -186,6 +187,7 @@ class Candidates:
                                 for line in range(a, b + 1):
                                     m |= file_lines.get(line, 0)
                             line_keys[key] = m
+                            ranges_out[key] = [(path, a, b) for a, b in ranges]
                 except (SyntaxError, ValueError, RecursionError, MemoryError):
                     line_keys = {}
             keys = list(result["changed"])
@@ -211,14 +213,14 @@ class Candidates:
                     mask |= self.masks.get(key, 0)
                 changed.add(key)
             mask |= self.opens.get(path, 0)
-        return mask, results, changed, executable
+        return mask, results, changed, executable, ranges_out
 
 
 WALL0 = time.monotonic()
 LONG_MS = 3000
 # Stages that run tests in the zygote; each is worth its CPU only where it removes workers.
 REPLAY_LONG = True
-REFINE_SHORT = True
+REFINE_SHORT = False
 
 
 class Execute:
@@ -229,7 +231,7 @@ class Execute:
         self.scheduler = scheduler
         limit = 180.0 if n_patches <= 40 else 270.0
         self.deadline = WALL0 + 0.45 * limit
-        self.remaining = 0.8 * n_patches
+        self.remaining = 1.5 * n_patches
         self.zygote = None
         if swap.ready:
             from zexec import Zygote
@@ -247,17 +249,17 @@ class Execute:
                     continue
                 coded = [(set(map(tuple, c)), d, t) for c, d, t in units]
                 covered = set().union(*(c for c, _, _ in coded))
-                self.tpc_units[number] = (name, coded, covered)
+                self.tpc_units[number] = (name, coded, covered, data.get("lines", {}).get(name))
         except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
             self.tpc = None
 
-    def replay_long(self, raw, plan, mask, changed):
+    def replay_long(self, raw, plan, mask, changed, ranges=None):
         """Drop a TPC executor test when every query that starts changed code digests the same."""
         if not REPLAY_LONG or self.tpc is None or not plan or time.monotonic() > self.deadline - 10:
             return plan
         s = self.scheduler
         selected = {n for group in plan for n in group}
-        for number, (name, units, covered) in self.tpc_units.items():
+        for number, (name, units, covered, lines) in self.tpc_units.items():
             if number not in selected or changed & self.tpc_setup:
                 continue
             bit = 1 << number
@@ -265,11 +267,25 @@ class Execute:
             if inside - covered:
                 self.stats[name + "_outside"] = True
                 continue
-            affected = [i for i, (c, _, _) in enumerate(units) if c & changed]
+            reach = 0
+            for k in changed:
+                if lines is not None and ranges and k in ranges:
+                    # Queries that ran the edited statement on the pin.
+                    for path, a, b in ranges[k]:
+                        table = lines.get(path, {})
+                        for line in range(a, b + 1):
+                            reach |= table.get(line, 0)
+                else:
+                    for i, (c, _, _) in enumerate(units):
+                        if k in c:
+                            reach |= 1 << i
+            affected = [i for i in range(len(units)) if reach >> i & 1]
+            # The test is a candidate, so it ran the edit; if no query did, setup or code
+            # outside the queries did, and replaying queries proves nothing.
             if not affected or any(units[i][1] is None for i in affected):
                 continue
-            # Traced query CPU includes the tracer; replays use about half.
-            estimate = 0.1 + 0.5 * sum(units[i][2] for i in affected)
+            # Traced query CPU includes the tracer; replays use about 0.6 of it.
+            estimate = 0.1 + 0.6 * sum(units[i][2] for i in affected)
             rest = selected - {number}
             after = s.repack(rest, plan) if rest else []
             upside = (s.cost(plan) - s.cost(after)) / 1000
@@ -278,7 +294,8 @@ class Execute:
             if estimate > 0.7 * upside or estimate > self.remaining:
                 continue
             wall = min(self.deadline - time.monotonic(), 10.0 + 3.0 * estimate)
-            digests = self.zygote.tpc(raw, [(name, i) for i in affected], 2.0 * estimate + 1.0, wall)
+            digests = self.zygote.tpc(raw, [(name, i) for i in affected], 2.0 * estimate + 1.0, wall,
+                                      [units[i][1] for i in affected])
             self.remaining -= max(estimate, self.zygote.last_cpu)
             self.stats[name + "_cpu"] = round(self.zygote.last_cpu, 3)
             if digests is None or len(digests) != len(affected):
