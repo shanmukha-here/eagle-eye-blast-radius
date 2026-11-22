@@ -60,13 +60,15 @@ def install(root, changes, called, functions):
     for path, names in changes.items():
         file = root / path
         tree = compile(file.read_bytes(), str(file), "exec", dont_inherit=True)
+        definitions = defaultdict(list)
+        for code in descendants(tree):
+            definitions[code.co_qualname].append(code)
         for name in names:
-            if any((path, qual) in called
-                   for qual in (name, *(c.co_qualname for c in descendants(tree)
-                                        if c.co_qualname.startswith(name + ".<locals>.")))):
+            if any(file == path and (qual == name or qual.startswith(name + ".<locals>."))
+                   for file, qual in called):
                 return False
             instances = functions.get((path, name))
-            revised = [code for code in descendants(tree) if code.co_qualname == name]
+            revised = definitions[name]
             if not instances or len(revised) != 1:
                 return False
             code = revised[0]
@@ -133,8 +135,11 @@ def server(duplex, base, modules):
                 except EOFError:
                     pass
                 finally:
-                    with suppress(ProcessLookupError):
-                        os.kill(pid, signal.SIGKILL)
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        with suppress(ProcessLookupError):
+                            os.kill(pid, signal.SIGKILL)
                     os.waitpid(pid, 0)
             duplex.send((result, seconds() - started))
     except (Exception, SystemExit):

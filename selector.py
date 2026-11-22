@@ -320,7 +320,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             if checked != plan:
                 precision.stats["small_clean_cohort"] = sum(map(len, plan))
                 plan = checked
-            plan = patched_tests.refine(text, plan, long_cases.tests.keys(), verify.passed)
+            plan = patched_tests.refine(text, plan, long_cases.tests.keys(), verify.passed, verify.attempted)
             budget.execution_cpu += patched_tests.stats.get("patched_parent_cpu", 0.0)
             if plan:
                 insured = scheduler.insure(plan, insurance_scope(text), verify.passed)

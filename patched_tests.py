@@ -1,5 +1,6 @@
 """Certify individual short tests against a bounded patched checkout."""
 
+from collections import defaultdict
 from contextlib import suppress
 import multiprocessing
 import os
@@ -98,6 +99,7 @@ def execute(conn, root, names, cpu_cap, bare):
         pass
     finally:
         conn.close()
+        os._exit(0)
 
 
 def stop(process):
@@ -117,7 +119,7 @@ class PatchedTests:
         self.profile = profile
         self.base = base.resolve()
         self.context = multiprocessing.get_context("fork")
-        self.remaining = min(90.0, count * 1.8)
+        self.remaining = min(55.0, count * 1.15)
         self.deadline = time.monotonic() + (125 if count <= 40 else 185)
         self.available = len(os.listdir("/proc/self/task")) == 1
         self.precision = precision
@@ -133,7 +135,31 @@ class PatchedTests:
         return {path: tuple(".".join(site[:-1]) for site, _, _ in rows)
                 for path, rows in changes.items()}
 
-    def refine(self, patch, plan, long_tests, known_passes):
+    def estimate(self, candidates, warm=False):
+        runtime = sum(max(self.scheduler.durations[n], 2) for n in candidates) / 1000
+        fixtures = self.profile.fixture_cpu(candidates)
+        if warm:
+            return max(0.06, 0.74 * runtime, 0.80 * fixtures)
+        return 0.19 + max(0.74 * runtime, fixtures)
+
+    def cohort(self, selected, candidates, plan, available):
+        groups = defaultdict(set)
+        for n in candidates:
+            groups[self.profile.nodes[n].partition("::")[0]].add(n)
+        choices = []
+        for group in groups.values():
+            expected = self.estimate(group)
+            if expected > available:
+                continue
+            after = self.scheduler.repack(selected - group, plan)
+            saving = (self.scheduler.cost(plan) - self.scheduler.cost(after)) / 1000
+            if saving > 1.2 * expected:
+                choices.append((saving / expected, min(group), group))
+        if choices:
+            return max(choices)[-1]
+        return set()
+
+    def refine(self, patch, plan, long_tests, known_passes, attempted):
         self.stats = {}
         if not plan or not self.available or self.remaining < 0.25:
             return plan
@@ -149,10 +175,6 @@ class PatchedTests:
         upside = (self.scheduler.cost(plan) - self.scheduler.cost(after)) / 1000
         if upside < 0.18:
             return plan
-        expected = max(0.10, 0.55 * sum(self.scheduler.durations[n] for n in candidates) / 1000,
-                       self.profile.fixture_cpu(candidates))
-        if expected > min(2.25, upside * 1.1):
-            return plan
         try:
             edits = split_diff(patch)
             if not edits or any(
@@ -165,7 +187,15 @@ class PatchedTests:
             return plan
 
         begin = seconds()
-        cap = min(self.remaining, 3.0, max(0.55, expected * 1.25 + 0.35))
+        available = min(self.remaining, 2.5, upside * 0.90)
+        expected = self.estimate(candidates)
+        if expected > available:
+            candidates = self.cohort(selected, candidates, plan, available)
+            if not candidates:
+                self.stats = {"patched_skipped": "cohort_cost"}
+                return plan
+            expected = self.estimate(candidates)
+        cap = min(self.remaining, 2.9, upside, max(0.55, expected * 1.25 + 0.20))
         names = tuple(sorted(self.profile.nodes[n] for n in candidates))
         bare = all(name in self.profile.ready for name in names)
         self.stats = {"patched_candidates": len(names), "patched_unittest": bare}
@@ -184,6 +214,8 @@ class PatchedTests:
                 if cap - overlay_cpu < 0.15:
                     return plan
                 changes = self.warm_shapes(patch, candidates) if bare else None
+                if names in attempted and not changes:
+                    return plan
                 if changes and not self.warm.disabled:
                     result, cost, startup = self.warm.run(root, names, changes, cap - overlay_cpu, self.deadline)
                     warm_cpu = cost + startup
@@ -195,6 +227,8 @@ class PatchedTests:
                                           patched_overlay=overlay_cpu, patched_import=imported, patched_tests=tests)
                         known_passes.update(certified)
                         return self.scheduler.repack(selected - certified, plan) if certified else plan
+                if names in attempted:
+                    return plan
                 recv, send = self.context.Pipe(duplex=False)
                 with recv, send:
                     process = self.context.Process(target=execute, args=(send, root, names, cap - overlay_cpu, bare))
