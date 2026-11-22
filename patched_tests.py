@@ -67,7 +67,7 @@ class Outcomes:
         return sorted(passed)
 
 
-def execute(conn, root, names, cpu_cap, bare):
+def execute(conn, root, names, cpu_cap, bare, whole=False):
     try:
         start = seconds()
         os.setsid()
@@ -87,7 +87,8 @@ def execute(conn, root, names, cpu_cap, bare):
             return
         imported = seconds()
         if bare:
-            passed = run_unittests(names, continue_after_failure=True, timeout=6)
+            # When only an empty plan saves time, the first failure settles it.
+            passed = run_unittests(names, continue_after_failure=not whole, timeout=6)
             conn.send((passed, imported - start, 0.0, seconds() - imported))
             return
 
@@ -238,13 +239,14 @@ class PatchedTests:
         names = tuple(sorted(self.profile.nodes[n] for n in candidates))
         bare = all(name in self.profile.ready for name in names)
         self.stats = {"patched_candidates": len(names), "patched_unittest": bare}
+        if not bare:
+            # Fresh pytest sessions did not finish within their cap on any native or Docker gate.
+            self.stats["patched_skipped"] = "pytest"
+            return plan
+        whole = not (selected - candidates)
         warm_cpu = 0.0
         try:
             # A new import for every child avoids aliased objects from the pin.
-            # Importing pytest once amortizes framework startup across commits.
-            if not bare:
-                import pytest
-
             if any(name in sys.modules for name in ("sqlglot", "tests")):
                 return plan
             with PatchWorkspace(self.base, patch) as workspace:
@@ -275,7 +277,7 @@ class PatchedTests:
                 cap -= warm_cpu
                 recv, send = self.context.Pipe(duplex=False)
                 with recv, send:
-                    process = self.context.Process(target=execute, args=(send, root, names, cap - overlay_cpu, bare))
+                    process = self.context.Process(target=execute, args=(send, root, names, cap - overlay_cpu, bare, whole))
                     process.start()
                     send.close()
                     try:
