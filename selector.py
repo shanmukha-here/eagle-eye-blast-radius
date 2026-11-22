@@ -295,7 +295,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         workers = json.dumps(plan, separators=(",", ":"))
         sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
 
-    def emit(path, plan, beginning, text=None, verified=False):
+    def emit(path, plan, beginning, text=None, verified=False, replay=None):
         recovered = None if verified else recovery.declarations(text)
         skip_risk = False
         if recovered is not None:
@@ -351,7 +351,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                          **queries.stats, **precision.stats, **long_cases.stats, **risk.stats)
         passed = verify.passed.copy() if text else set()
         nearby = insurance_scope(text) if text and plan else None
-        planned.append((path, text, plan, nearby, passed, verify.attempted.copy(), stats))
+        planned.append((path, replay or text, plan, nearby, passed, verify.attempted.copy(), stats))
     observation = ObservationIndex(impact, map_path.with_name("values.z"))
     surface = Surface(impact, map_path.parent, observation.references)
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
@@ -394,13 +394,13 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     observed = precision.registry(text)
                     if observed is not None:
                         plan = scheduler.plan(observed)
-                        emit(path, plan, beginning, verified=True)
+                        emit(path, plan, beginning, verified=True, replay=text)
                         continue
                 if changes_routing(impact, text):
                     observed = precision.registry(text)
                     plan = (fallback_plan if observed is None else
                             scheduler.plan(observed))
-                    emit(path, plan, beginning)
+                    emit(path, plan, beginning, replay=text if observed is not None else None)
                     continue
                 metadata = surface.select(text)
                 if addition(text) and metadata is None:
