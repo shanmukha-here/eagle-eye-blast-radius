@@ -6,11 +6,11 @@ import os
 from pathlib import Path
 import signal
 import sys
-import tempfile
 import time
 
 from cpu_budget import seconds
 from decision import PatchWorkspace
+from exact_tests import run_unittests
 from impact import UnknownChange, split_diff
 
 
@@ -24,12 +24,16 @@ class Outcomes:
         self.bad = set()
         self.bad_files = set()
         self.collection_error = False
+        self.collected = 0.0
 
     def pytest_collection_modifyitems(self, config, items):
         selected = [item for item in items if item.nodeid in self.names]
         deselected = [item for item in items if item.nodeid not in self.names]
         items[:] = selected
         config.hook.pytest_deselected(items=deselected)
+
+    def pytest_collection_finish(self):
+        self.collected = time.process_time()
 
     def pytest_collectreport(self, report):
         self.collection_error |= report.failed
@@ -51,7 +55,7 @@ class Outcomes:
                       and node.partition("::")[0] not in self.bad_files)
 
 
-def execute(conn, root, names, cpu_cap):
+def execute(conn, root, names, cpu_cap, bare):
     try:
         start = time.process_time()
         os.setsid()
@@ -64,14 +68,19 @@ def execute(conn, root, names, cpu_cap):
         sys.path.insert(0, str(root))
         os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
 
-        import pytest
-
         # The parent warms only framework dependencies. Project and tests are
         # first imported here, with the patched checkout first on sys.path.
         import sqlglot
         if "sqlglot/__init__.py" != str(Path(sqlglot.__file__).relative_to(root)):
             return
         imported = time.process_time()
+        if bare:
+            passed = run_unittests(names, failfast=False)
+            conn.send((passed, imported - start, 0.0, time.process_time() - imported))
+            return
+
+        import pytest
+
         result = Outcomes(names)
         paths = sorted({node.partition("::")[0] for node in names})
         status = pytest.main([
@@ -81,7 +90,8 @@ def execute(conn, root, names, cpu_cap):
             "--rootdir", str(root), "--basetemp", str(root / "pytest-run"), *paths,
         ], plugins=[result])
         if status in (pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED):
-            conn.send((result.passed(), imported - start, time.process_time() - imported))
+            conn.send((result.passed(), imported - start, result.collected - imported,
+                       time.process_time() - result.collected))
     except (Exception, SystemExit):
         pass
     finally:
@@ -144,11 +154,13 @@ class PatchedTests:
         begin = seconds()
         cap = min(self.remaining, 3.0, max(0.55, expected * 1.25 + 0.35))
         names = tuple(sorted(self.profile.nodes[n] for n in candidates))
-        self.stats = {"patched_candidates": len(names)}
+        bare = all(name in self.profile.ready for name in names)
+        self.stats = {"patched_candidates": len(names), "patched_unittest": bare}
         try:
             # A new import for every child avoids aliased objects from the pin.
             # Importing pytest once amortizes framework startup across commits.
-            import pytest
+            if not bare:
+                import pytest
 
             if any(name in sys.modules for name in ("sqlglot", "tests")):
                 return plan
@@ -159,20 +171,21 @@ class PatchedTests:
                     return plan
                 recv, send = self.context.Pipe(duplex=False)
                 with recv, send:
-                    process = self.context.Process(target=execute, args=(send, root, names, cap - overlay_cpu))
+                    process = self.context.Process(target=execute, args=(send, root, names, cap - overlay_cpu, bare))
                     process.start()
                     send.close()
                     try:
                         limit = min(self.deadline, time.monotonic() + 0.30 + 2 * cap)
                         if not recv.poll(max(0, limit - time.monotonic())):
                             return plan
-                        passed, imported, tests = recv.recv()
+                        passed, imported, collected, tests = recv.recv()
                     finally:
                         stop(process)
                 certified = {self.profile.numbers[name] for name in passed} & candidates
                 self.stats.update(patched_passed=len(certified), patched_overlay=overlay_cpu,
-                                  patched_import=imported, patched_tests=tests)
+                                  patched_import=imported, patched_collection=collected, patched_tests=tests)
                 if certified:
+                    known_passes.update(certified)
                     return self.scheduler.repack(selected - certified, plan)
         except (EOFError, KeyError, OSError, SyntaxError, UnknownChange, ValueError):
             pass

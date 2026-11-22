@@ -32,7 +32,7 @@ class UnitOutcomes(unittest.TestResult):
         super().addSuccess(test)
 
 
-def run_unittests(ids):
+def run_unittests(ids, failfast=True):
     loader = unittest.TestLoader()
     test_names = {}
     tests = unittest.TestSuite()
@@ -45,7 +45,7 @@ def run_unittests(ids):
         test_names[name] = node
         tests.addTest(group)
     result = UnitOutcomes()
-    result.failfast = True
+    result.failfast = failfast
     tests.run(result)
     # Fixture errors can be emitted after otherwise successful methods.
     if any(not isinstance(test, unittest.TestCase) for test, _ in (*result.errors, *result.skipped)):
