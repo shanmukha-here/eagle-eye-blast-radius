@@ -39,5 +39,6 @@ COPY cold_import.py ./
 
 # These maps were generated from the same pinned source and test wheels.
 COPY --from=maps /frozen/app/ /app/
+COPY --from=maps /frozen/parser/ /app/
 
 CMD ["python", "/app/selector.py"]
