@@ -239,12 +239,6 @@ class PatchedTests:
         names = tuple(sorted(self.profile.nodes[n] for n in candidates))
         bare = all(name in self.profile.ready for name in names)
         self.stats = {"patched_candidates": len(names), "patched_unittest": bare}
-        if accepted and len(names) > 1:
-            # The code-object check already dropped every test that cannot see the edit, so
-            # two or more remaining candidates rarely all pass (hidden-like and holdout: 19 of
-            # 228 such runs emptied the plan, for 188 CPU-s).
-            self.stats["patched_skipped"] = "accepted"
-            return plan
         if not bare:
             # Fresh pytest sessions did not finish within their cap on any native or Docker gate.
             self.stats["patched_skipped"] = "pytest"
