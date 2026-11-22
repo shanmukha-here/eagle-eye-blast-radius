@@ -43,6 +43,7 @@
 !patched_tests.py
 !warm_tests.py
 !isolated_cpu.bin
+!grouped_cpu.bin
 !ready_imports.json
 !memo_witness.py
 !parser_signal.py

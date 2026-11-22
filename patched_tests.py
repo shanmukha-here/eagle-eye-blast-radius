@@ -3,6 +3,7 @@
 import ast
 from collections import defaultdict
 from contextlib import suppress
+from mmap import ACCESS_READ, mmap
 import multiprocessing
 import os
 from pathlib import Path
@@ -12,7 +13,7 @@ import time
 
 from cpu_budget import seconds
 from decision import PatchWorkspace
-from exact_tests import run_unittests
+from exact_tests import MICROSECONDS, run_unittests
 from impact import UnknownChange, patched, split_diff, syntax
 from warm_tests import WarmTests
 
@@ -119,6 +120,11 @@ class PatchedTests:
         self.profile = profile
         self.base = base.resolve()
         self.context = multiprocessing.get_context("fork")
+        self.grouped = None
+        profile_path = Path(__file__).with_name("grouped_cpu.bin")
+        if profile_path.is_file():
+            with profile_path.open("rb") as file:
+                self.grouped = mmap(file.fileno(), 0, access=ACCESS_READ)
         self.remaining = min(55.0, count * 1.15)
         self.deadline = time.monotonic() + (125 if count <= 40 else 185)
         self.available = len(os.listdir("/proc/self/task")) == 1
@@ -156,11 +162,15 @@ class PatchedTests:
         return changes
 
     def estimate(self, candidates, warm=False):
-        runtime = sum(max(self.scheduler.durations[n], 2) for n in candidates) / 1000
+        floor = 0.0
+        for n in candidates:
+            position = (self.scheduler.bits[n].bit_length() - 1) * MICROSECONDS.size
+            measured = 0
+            if self.grouped is not None and 0 <= position <= len(self.grouped) - MICROSECONDS.size:
+                measured, = MICROSECONDS.unpack_from(self.grouped, position)
+            floor += measured * 1e-6 if measured else max(self.scheduler.durations[n], 2) * 0.00074
         fixtures = self.profile.fixture_cpu(candidates)
-        if warm:
-            return max(0.06, 0.74 * runtime, 0.80 * fixtures)
-        return 0.19 + max(0.74 * runtime, fixtures)
+        return (0.06 if warm else 0.15) + max(floor, fixtures)
 
     def cohort(self, selected, candidates, plan, available):
         groups = defaultdict(set)
