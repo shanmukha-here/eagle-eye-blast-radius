@@ -169,8 +169,9 @@ class Candidates:
             if absent and name.endswith("_sql") and not name.startswith("_"):
                 return None
             if named or absent and self._refs(name, 0, patched):
-                # The name is used elsewhere: cover the tests that look it up.
-                reach = self._reach(path, scope, name, results, texts)
+                # The name is used elsewhere: cover the tests that look it up. Calls of an
+                # inherited method started an entry, or the new one passes through.
+                reach = self._reach(path, scope, name, results, texts, calls=absent)
                 if reach is None:
                     return None
                 keys.extend(reach[0])
@@ -185,7 +186,8 @@ class Candidates:
                     or self._refs(name, 3, patched):
                 reach = None
                 if scope and not name.startswith("__"):
-                    reach = self._reach(path, scope, name, results, texts)
+                    # Calls of the deleted method started it.
+                    reach = self._reach(path, scope, name, results, texts, calls=False)
                 if reach is None:
                     return None
                 keys.extend(reach[0])
@@ -193,12 +195,12 @@ class Candidates:
             keys.append(tuple(key))
         return keys, extra
 
-    def _reach(self, path, scope, name, results, texts):
+    def _reach(self, path, scope, name, results, texts, calls=True):
         """(code keys, mask) of the tests whose attribute lookups of ``name`` can see a method
         of that name added to or deleted from class ``scope``, or None when unproven.
 
         A lookup by a static name is an attribute instruction, and it only acts in a test
-        that ran its line. A lookup by data is a getattr-like call or a member listing: one
+        that ran its line; method calls count only when ``calls`` is set. A lookup by data is a getattr-like call or a member listing: one
         with a constant name declines here, and the others act where they ran. Lookups in
         code that ran before the tests are returned as keys, which the caller declines or
         sends to the value diff like any other import-time code."""
@@ -218,7 +220,8 @@ class Candidates:
         if self._new_lookups(name, results, texts):
             return None
         keys, mask = [], 0
-        sites = [((f, q, first), f, line) for f, q, first, line in s["attrs"].get(name, ())]
+        sites = [((f, q, first), f, line) for f, q, first, line, call in s["attrs"].get(name, ())
+                 if calls or not call]
         for f, line, suffix, owners in s["dynamic"]:
             if suffix == "<module>" or suffix and not name.endswith(suffix):
                 continue
@@ -250,7 +253,7 @@ class Candidates:
             for node, words, _ in zpatch.lookup_sites(new_tree):
                 if (name in words) if words is not None else ast.dump(node) not in old_sites:
                     return True
-            pinned = {q for f, q, _, _ in attrs if f == other}
+            pinned = {q for f, q, _, _, _ in attrs if f == other}
             changed = {k[1] for k in results[other]["changed"]}
             stack = [code]
             while stack:

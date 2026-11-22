@@ -5,8 +5,8 @@ attribute instructions in code objects; dynamic ones go through getattr-like cal
 member enumeration. For every Python file in sqlglot/ and tests/, this records:
 
 - attrs: for each attribute name, the code objects whose own instructions load, store or
-  delete it and the lines of those instructions (keys as in zmap.xz: path, qualname, first
-  line);
+  delete it, the lines of those instructions and whether the load is a method call (keys as
+  in zmap.xz: path, qualname, first line);
 - constants: every identifier word in a string constant passed to a name-lookup call;
 - dynamic: code objects with a name-lookup call whose name is not a constant, or that
   enumerate members, with the site's line and the name suffix the site is limited to (""
@@ -73,7 +73,8 @@ for top in ("sqlglot", "tests"):
                         line = ins.line_number
                     if ins.opname in ATTR_OPS:
                         name = ins.argval if isinstance(ins.argval, str) else ins.argrepr.split()[0]
-                        attrs.setdefault(name, set()).add(key + (line,))
+                        call = "NULL|self" in ins.argrepr  # a method load that a call follows
+                        attrs.setdefault(name, set()).add(key + (line, call))
             for node, words, suffix in site_kinds(tree):
                 if words is not None:
                     constants.update(words)

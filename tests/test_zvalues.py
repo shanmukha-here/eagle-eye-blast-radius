@@ -99,16 +99,19 @@ class ValueEditTests(unittest.TestCase):
         c.classes = {"unique": {("sqlglot/x.py", "A"): 0, ("sqlglot/x.py", "E"): 1},
                      "classes": [(("sqlglot/x.py", "A"), [0, "builtins.object"], {}),
                                  (("sqlglot/x.py", "E"), [1, "builtins.Exception", "builtins.object"], {})]}
-        c.sinks = {"attrs": {"n": [("sqlglot/y.py", "g", 3, 4), ("sqlglot/y.py", "<module>", 1, 9)]},
+        c.sinks = {"attrs": {"n": [("sqlglot/y.py", "g", 3, 4, False), ("sqlglot/y.py", "<module>", 1, 9, False),
+                                   ("sqlglot/y.py", "g", 3, 5, True)]},
                    "constants": {"k"}, "dynamic": [("sqlglot/z.py", 7, "_sql", [("sqlglot/z.py", "h", 6)]),
                                                    ("sqlglot/z.py", 8, "", [("sqlglot/z.py", "h", 6)])]}
         c.preload = {("sqlglot/y.py", "<module>", 1)}
-        c.lines = {"sqlglot/y.py": {4: 0b10}, "sqlglot/z.py": {8: 0b1000}}
+        c.lines = {"sqlglot/y.py": {4: 0b10, 5: 0b10000}, "sqlglot/z.py": {8: 0b1000}}
         c.masks = {("sqlglot/z.py", "h", 6): 0b100}
         old = "class A:\n    pass\n"
         results = {"sqlglot/x.py": {"old_text": old, "changed": []}}
         keys, mask = c._reach("sqlglot/x.py", "A", "n", results, {"sqlglot/x.py": old})
         self.assertEqual(keys, [("sqlglot/y.py", "<module>", 1)])
+        self.assertEqual(mask, 0b11010)
+        _, mask = c._reach("sqlglot/x.py", "A", "n", results, {"sqlglot/x.py": old}, calls=False)
         self.assertEqual(mask, 0b1010)
         self.assertIsNone(c._reach("sqlglot/x.py", "A", "k", results, {"sqlglot/x.py": old}))
         self.assertIsNone(c._reach("sqlglot/x.py", "E", "n", results, {"sqlglot/x.py": old}))
