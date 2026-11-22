@@ -199,7 +199,7 @@ class PatchedTests:
             return max(choices)[-1]
         return set()
 
-    def refine(self, patch, plan, long_tests, known_passes, attempted):
+    def refine(self, patch, plan, long_tests, known_passes, attempted, accepted=False):
         self.stats = {}
         if not plan or not self.available or self.remaining < 0.25:
             return plan
@@ -239,6 +239,12 @@ class PatchedTests:
         names = tuple(sorted(self.profile.nodes[n] for n in candidates))
         bare = all(name in self.profile.ready for name in names)
         self.stats = {"patched_candidates": len(names), "patched_unittest": bare}
+        if accepted and len(names) > 1:
+            # The code-object check already dropped every test that cannot see the edit, so
+            # two or more remaining candidates rarely all pass (hidden-like and holdout: 19 of
+            # 228 such runs emptied the plan, for 188 CPU-s).
+            self.stats["patched_skipped"] = "accepted"
+            return plan
         if not bare:
             # Fresh pytest sessions did not finish within their cap on any native or Docker gate.
             self.stats["patched_skipped"] = "pytest"
@@ -312,9 +318,9 @@ def lane(conn, engine):
             message = conn.recv()
             if message is None:
                 break
-            text, plan, long_tests, passed, attempted = message
+            text, plan, long_tests, passed, attempted, accepted = message
             baseline = engine.scheduler.cost(plan)
-            plan = engine.refine(text, plan, long_tests, passed, attempted)
+            plan = engine.refine(text, plan, long_tests, passed, attempted, accepted)
             saving = (baseline - engine.scheduler.cost(plan)) / 1000
             spent = engine.stats.get("patched_cpu", 0.0)
             if saving > spent:
@@ -338,7 +344,7 @@ class ExecutionLane:
         self.started = 0.0
         self.available = engine.available
 
-    def submit(self, text, plan, passed, attempted):
+    def submit(self, text, plan, passed, attempted, accepted=False):
         if not self.available or not text or not plan or time.monotonic() >= self.engine.deadline:
             return False
         if self.process is None:
@@ -356,7 +362,7 @@ class ExecutionLane:
                 child_conn.close()
         try:
             self.started = time.monotonic()
-            self.conn.send((text, plan, self.long_tests, passed, attempted))
+            self.conn.send((text, plan, self.long_tests, passed, attempted, accepted))
             return True
         except OSError:
             self.available = False

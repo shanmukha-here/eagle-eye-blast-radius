@@ -570,9 +570,11 @@ def lookup_sites(tree):
                 yield call, None, ""
                 continue
             position = NAME_CALLS[name]
-            if name == "patch":
+            if name in ("patch", "object", "multiple"):
                 spec = [k for k in call.keywords if k.arg in ("autospec", "spec", "spec_set", "new_callable")]
                 if spec:
+                    # The mock lists the members of what it replaces; its target is a name too.
+                    yield call, _words(call), ""
                     yield call, None, ""
                     continue
             if position is None:

@@ -509,6 +509,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
     # TPC replay may still drop these after the value check, so they do not count against it.
     replayable = set(executor.tpc_units) if executor.tpc is not None else set()
     swapped = {}
+    accepted = set()
     for i, (path, text, plan, nearby, passed, attempted, stats) in enumerate(planned):
         if not plan or not swap.ready:
             continue
@@ -530,6 +531,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             stats.update({"swap_" + k: v for k, v in swap.stats.items()})
         if found is None:
             continue
+        accepted.add(i)
         mask = found[0]
         keep = {n for n in selected if mask >> n & 1}
         if report:
@@ -594,7 +596,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 outputs[completed] = finish(prior, checker)
             _, text, plan, _, passed, attempted, _ = record
             lane = lanes[rank % len(lanes)]
-            launched = lane.submit(text, plan, passed, attempted)
+            launched = lane.submit(text, plan, passed, attempted, index in accepted)
             pending.append((index, record, lane if launched else None))
         while pending:
             completed, prior, checker = pending.popleft()
