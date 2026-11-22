@@ -21,6 +21,7 @@ import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RSS_LIMIT = 2200 << 20
+TPC_TEST = "tests/test_executor.py::TestExecutor::test_execute_tpcds"
 
 
 def _send(stream, obj):
@@ -220,20 +221,37 @@ def serve():
     base, ids = _recv(stdin)
     os.chdir(base)
     sys.path.insert(1, HERE)
-    found, _ = zrun.load(base, ids)
     import zpatch  # noqa: F401  (import before forking)
     import impact  # noqa: F401
+    if base not in sys.path:
+        sys.path.insert(0, base)
+    import sqlglot  # noqa: F401
     prefix = os.path.join(base, "sqlglot") + os.sep
+    found = {}
     index = {}
-    for obj in gc.get_objects():
-        if isinstance(obj, types.FunctionType):
-            code = obj.__code__
-            if code.co_filename.startswith(prefix):
-                key = (code.co_filename[len(base) + 1:], code.co_qualname, code.co_firstlineno)
-                index.setdefault(key, []).append(obj)
+
+    def reindex():
+        index.clear()
+        gc.unfreeze()
+        for obj in gc.get_objects():
+            if isinstance(obj, types.FunctionType):
+                code = obj.__code__
+                if code.co_filename.startswith(prefix):
+                    key = (code.co_filename[len(base) + 1:], code.co_qualname, code.co_firstlineno)
+                    index.setdefault(key, []).append(obj)
+        gc.freeze()
+
+    def ensure(test_ids):
+        # Test modules are imported on first use, as collection would import them.
+        missing = [t for t in test_ids if t not in found]
+        if missing:
+            more, _ = zrun.load(base, missing)
+            found.update(more)
+            reindex()
+
+    reindex()
     runner = zrun.Runner(found)
     tpc_state = None
-    gc.freeze()
     _send(stdout, "ready")
     while True:
         try:
@@ -245,15 +263,22 @@ def serve():
             kind, job = job[0], job[1:]
             if tpc_state is None:
                 try:
+                    ensure([TPC_TEST])
                     import ztpc_units
                     tpc_state = ztpc_units.Tables()
-                    gc.freeze()
+                    reindex()
                 except Exception:
                     tpc_state = False
             if tpc_state is False:
                 _send(stdout, None)
                 continue
         patch, tests, limits, budget, wall = job
+        if kind == "tests":
+            try:
+                ensure(tests)
+            except Exception:
+                _send(stdout, None)
+                continue
         r, w = os.pipe()
         pid = os.fork()
         if pid == 0:

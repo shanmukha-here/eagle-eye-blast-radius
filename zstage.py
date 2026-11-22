@@ -39,6 +39,11 @@ class Candidates:
         for mask in data["opens"].values():
             self.blocked |= mask
         self.cpu = data.get("grouped_cpu") or data["cpu"]
+        self.lines = {}
+        try:
+            self.lines = marshal.loads(lzma.decompress(Path(str(map_path) + ".lines").read_bytes()))
+        except (OSError, ValueError, EOFError, lzma.LZMAError):
+            self.lines = {}
         self.by_name = {}
         for key in list(self.masks) + list(self.preload):
             self.by_name.setdefault((key[0], key[1]), []).append(key)
@@ -70,6 +75,23 @@ class Candidates:
             except (OSError, UnicodeError, UnknownChange, zpatch.Unsupported, ValueError,
                     RecursionError, MemoryError, TypeError):
                 return None
+            line_keys = {}
+            file_lines = self.lines.get(path)
+            if file_lines is not None and result["changed"]:
+                try:
+                    tree = __import__("ast").parse(old)
+                    nodes = zpatch.function_nodes(tree)
+                    edited, inserts = zpatch.changed_lines(hunks)
+                    for key in result["scoped"]:
+                        ranges = zpatch.line_ranges(tree, nodes, key, edited, inserts)
+                        if ranges is not None:
+                            m = 0
+                            for a, b in ranges:
+                                for line in range(a, b + 1):
+                                    m |= file_lines.get(line, 0)
+                            line_keys[key] = m
+                except (SyntaxError, ValueError, RecursionError, MemoryError):
+                    line_keys = {}
             keys = list(result["changed"])
             for name, _, _ in result["defaults"]:
                 found = self.by_name.get((path, name))
@@ -80,7 +102,10 @@ class Candidates:
             for key in keys:
                 if key in self.preload:
                     return None
-                mask |= self.masks.get(key, 0)
+                if key in line_keys:
+                    mask |= line_keys[key] & self.masks.get(key, 0)
+                else:
+                    mask |= self.masks.get(key, 0)
                 changed.add(key)
             mask |= self.opens.get(path, 0)
             results[path] = result
@@ -138,7 +163,8 @@ class Execute:
             affected = [i for i, (c, _, _) in enumerate(units) if c & changed]
             if not affected or any(units[i][1] is None for i in affected):
                 continue
-            estimate = 0.1 + sum(units[i][2] for i in affected)
+            # Traced query CPU includes the tracer; replays use about half.
+            estimate = 0.1 + 0.5 * sum(units[i][2] for i in affected)
             rest = selected - {number}
             after = s.repack(rest, plan) if rest else []
             upside = (s.cost(plan) - s.cost(after)) / 1000
@@ -172,13 +198,14 @@ class Execute:
             return plan
         after = s.repack(selected - short, plan) if selected - short else []
         upside = (s.cost(plan) - s.cost(after)) / 1000
-        estimate = 0.03 + sum(self.cpu[n] for n in short)
+        # The grouped profile overstates in-process CPU about threefold.
+        estimate = 0.03 + 0.35 * sum(self.cpu[n] for n in short)
         self.stats = {"swap_exec_candidates": len(short), "swap_exec_estimate": round(estimate, 3),
                       "swap_exec_upside": round(upside, 3)}
         if estimate > 0.6 * upside or estimate > self.remaining:
             return plan
         tests = sorted(short)
-        limits = {n: 1.0 + 4.0 * self.cpu[n] for n in tests}
+        limits = {n: 2.0 + 4.0 * self.cpu[n] for n in tests}
         wall = min(self.deadline - time.monotonic(), 2.0 + 4.0 * estimate)
         begin = _cpu()
         result = self.zygote.run(raw, tests, limits, 2.0 * estimate + 0.5, wall)

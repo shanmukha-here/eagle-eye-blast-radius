@@ -111,6 +111,12 @@ def _own(code, skip_doc):
             code.co_kwonlyargcount, code.co_flags, code.co_exceptiontable, code.co_nlocals)
 
 
+def _scope(code):
+    # Equal locals and flags: statements outside the edit read and bind names the same way.
+    return (code.co_varnames, code.co_cellvars, code.co_freevars, code.co_flags, code.co_argcount,
+            code.co_posonlyargcount, code.co_kwonlyargcount)
+
+
 def _children(code):
     return [c for c in code.co_consts if isinstance(c, types.CodeType)]
 
@@ -140,7 +146,7 @@ def analyze(path, old_text, new_text, filename):
     old_code = compile(old_text, filename, "exec", dont_inherit=True)
     new_code = compile(new_text, filename, "exec", dont_inherit=True)
     function_docs = {name for kind, name, _ in docs if kind == "function"}
-    changed, swaps = [], []
+    changed, swaps, scoped = [], [], []
 
     def walk(old, new, chain):
         if old.co_qualname != new.co_qualname:
@@ -151,6 +157,8 @@ def analyze(path, old_text, new_text, filename):
         skip_doc = old.co_qualname in function_docs
         if is_function and _own(old, skip_doc) != _own(new, skip_doc):
             changed.append(key)
+            if _scope(old) == _scope(new):
+                scoped.append(key)
             swaps.extend(here)
         elif is_function and skip_doc:
             swaps.append((key, new))
@@ -166,4 +174,116 @@ def analyze(path, old_text, new_text, filename):
     unique = {}
     for key, code in swaps:
         unique[key] = code
-    return {"changed": changed, "swaps": list(unique.items()), "docs": docs, "defaults": defaults}
+    return {"changed": changed, "swaps": list(unique.items()), "docs": docs, "defaults": defaults,
+            "scoped": scoped, "old_text": old_text}
+
+
+def changed_lines(hunks):
+    """Old-file line numbers (1-based) of replaced or deleted lines, and insertion points as
+    (line before, line after) pairs, from same-file hunks (start, new_start, old, new)."""
+    import difflib
+    lines, inserts = set(), []
+    for start, _, old, new in hunks:
+        for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
+            if tag in ("replace", "delete"):
+                lines.update(range(start + i1 + 1, start + i2 + 1))
+            elif tag == "insert":
+                inserts.append((start + i1, start + i1 + 1))
+    return lines, inserts
+
+
+def _statements(body):
+    for node in body:
+        yield node
+
+
+def _innermost(body, line):
+    """Innermost statement in ``body`` (recursively) whose span contains ``line``."""
+    for node in body:
+        if node.lineno <= line <= node.end_lineno:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return node, None
+            for field in ("body", "orelse", "finalbody"):
+                inner = getattr(node, field, None)
+                if inner:
+                    found = _innermost(inner, line)
+                    if found is not None:
+                        return found
+            for handler in getattr(node, "handlers", ()) or ():
+                found = _innermost(handler.body, line)
+                if found is not None:
+                    return found
+            for case in getattr(node, "cases", ()) or ():
+                found = _innermost(case.body, line)
+                if found is not None:
+                    return found
+            return node, node
+    return None
+
+
+HEADED = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith)
+
+
+def _range(node, line):
+    """Lines whose execution shows that control reached the edited part of ``node``. Headers
+    of these statements evaluate an expression first, so they always report a line."""
+    body = getattr(node, "body", None)
+    if isinstance(node, HEADED) and body and line < body[0].lineno:
+        return node.lineno, body[0].lineno - 1
+    return node.lineno, node.end_lineno
+
+
+def function_nodes(tree):
+    """Map (qualname-free name, first line) to function and lambda nodes, as code objects key them."""
+    out = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            first = min([node.lineno] + [d.lineno for d in node.decorator_list])
+            out.setdefault((node.name, first), []).append(node)
+        elif isinstance(node, ast.Lambda):
+            out.setdefault(("<lambda>", node.lineno), []).append(node)
+    return out
+
+
+def line_ranges(tree, nodes, key, lines, inserts):
+    """Line ranges inside the changed code object ``key`` that executions of the edit must
+    touch, or None when the edit cannot be placed below the function level."""
+    _, qualname, first = key
+    found = nodes.get((qualname.rsplit(".", 1)[-1], first), [])
+    if len(found) != 1:
+        return None
+    node = found[0]
+    if isinstance(node, ast.Lambda):
+        return [(node.lineno, node.end_lineno)]
+    body = node.body
+    start = body[0].lineno
+    if body and _doc_index(body) == 0:
+        body = body[1:]
+        if not body:
+            return None
+        start = body[0].lineno
+    nested = [(n.lineno, n.end_lineno) for n in ast.walk(node)
+              if n is not node and isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef))]
+
+    def inside_nested(line):
+        return any(a <= line <= b for a, b in nested)
+
+    ranges = []
+    mine = [line for line in lines if node.lineno <= line <= node.end_lineno and not inside_nested(line)]
+    points = [p for p in inserts if node.lineno <= p[0] <= node.end_lineno and not inside_nested(p[0])]
+    if not mine and not points:
+        return None
+    for line in mine:
+        if line < start:
+            return None
+        found = _innermost(body, line)
+        if found is None:
+            return None
+        stmt, _ = found
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return None
+        ranges.append(_range(stmt, line))
+    if points:
+        # Control can reach an insertion point without running the statements around it.
+        return None
+    return ranges
