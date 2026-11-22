@@ -58,6 +58,11 @@ class ValueEditTests(unittest.TestCase):
                 sys.meta_path.remove(finder)
                 sys.modules.pop("pkgz", None)
 
+    def test_qualnames_list_nested_functions(self):
+        import zstage
+        names = zstage._qualnames("class C:\n    def f(self, x=1):\n        def g():\n            pass\n", "x.py")
+        self.assertEqual(names, {"C.f", "C.f.<locals>.g"})
+
 
 if __name__ == "__main__":
     unittest.main()

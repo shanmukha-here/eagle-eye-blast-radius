@@ -10,6 +10,7 @@ import lzma
 import marshal
 import os
 import time
+import types
 from pathlib import Path
 
 import zpatch
@@ -168,6 +169,11 @@ class Candidates:
             keys.append(tuple(key))
         return keys
 
+    def _input_only(self, path):
+        """Tests that read only the inputs (meta and SQL) of this fixture's pairs."""
+        prefix, keep = INPUT_ONLY_READERS[path]
+        return sum(1 << i for i, t in enumerate(self.ids) if t.startswith(prefix) and t not in keep)
+
     def _value_mask(self, files, members=()):
         """(mask, code keys) covering every test that can see a module or class value change
         after importing ``files`` ({path: new text}) in place of the pin, or None."""
@@ -261,12 +267,17 @@ class Candidates:
                     self.stats.setdefault("decline", "21:if self.fixtures is None or path in self")
                     return None
                 try:
-                    patched(self.source(path), hunks, physical=True)
+                    new_fixture = patched(self.source(path), hunks, physical=True)
                 except (OSError, UnicodeError, UnknownChange, ValueError):
                     self.stats.setdefault("decline", "25:except (OSError, UnicodeError, UnknownCh")
                     return None
-                mask |= self.fixtures["opens"].get(path, 0)
-                unswapped |= self.fixtures["opens"].get(path, 0)
+                opens = self.fixtures["opens"].get(path, 0)
+                if path in INPUT_ONLY_READERS:
+                    from narrow import fixture_inputs
+                    if fixture_inputs(self.source(path)) == fixture_inputs(new_fixture):
+                        opens &= ~self._input_only(path)
+                mask |= opens
+                unswapped |= opens
                 executable = False
                 continue
             if not (path.startswith("sqlglot/") and path.endswith(".py")):
@@ -328,9 +339,12 @@ class Candidates:
             for name, _, _ in result["defaults"]:
                 found = self.by_name.get((path, name))
                 if not found:
-                    # A default can only matter if the function runs. Unknown name: decline.
-                    self.stats.setdefault("decline", "80:# A default can only matter if the funct")
-                    return None
+                    # A default can only matter if the function runs. A function of the pinned
+                    # file that no test started adds nothing; an unknown name declines.
+                    if name not in _qualnames(old, str(self.base / path)):
+                        self.stats.setdefault("decline", "80:# A default can only matter if the funct")
+                        return None
+                    continue
                 keys.extend(found)
             for key in keys:
                 if key in self.preload:
@@ -374,6 +388,17 @@ class Candidates:
         return mask, results, changed, executable, ranges_out, unswapped
 
 
+def _qualnames(text, filename):
+    """Qualified names of the functions compiled from a source."""
+    out, stack = set(), [compile(text, filename, "exec", dont_inherit=True)]
+    while stack:
+        code = stack.pop()
+        if code.co_flags & 0x2:
+            out.add(code.co_qualname)
+        stack.extend(c for c in code.co_consts if isinstance(c, types.CodeType))
+    return out
+
+
 def swap_text(text):
     """The sections of a unified diff that edit sqlglot/*.py files."""
     parts = text.split("\ndiff --git ")
@@ -389,6 +414,15 @@ def swap_text(text):
 
 
 VALUE_MIN_GAIN = 4.0
+# TestExecutor loads both TPC fixtures in setUpClass (so every test in the class opens them),
+# but only test_optimized_tpch reads the expected side of a pair (tests/test_executor.py on the
+# pin). When an edit leaves every pair's input the same, the other tests read the same data.
+INPUT_ONLY_READERS = {
+    "tests/fixtures/optimizer/tpc-ds/tpc-ds.sql": ("tests/test_executor.py::TestExecutor::", ()),
+    "tests/fixtures/optimizer/tpc-h/tpc-h.sql": (
+        "tests/test_executor.py::TestExecutor::",
+        ("tests/test_executor.py::TestExecutor::test_optimized_tpch",)),
+}
 # Dunders that Python only looks up to call. Deleting one changes only the calls that started
 # it; the value diff checks the class dict for side effects such as an implicit __hash__.
 PROTOCOL_DUNDERS = {
