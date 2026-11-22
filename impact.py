@@ -148,7 +148,7 @@ def structure(tree, source=None):
     functions = {}
     occurrences = {}
     restore = []
-    lines = source.split("\n") if source is not None else None
+    lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n") if source is not None else None
 
     def visit(node, path):
         if isinstance(node, (*FUNCTION, ast.Lambda)):

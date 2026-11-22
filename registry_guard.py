@@ -37,7 +37,7 @@ def dispatch(node):
 def bindings(path, source):
     tree = syntax(path, source)[0]
     state = []
-    lines = source.split("\n")
+    lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     pending = deque([tree])
     while pending:
         item = pending.popleft()
