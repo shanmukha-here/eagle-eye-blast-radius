@@ -138,11 +138,17 @@ def apply_hunks(source, hunks, physical=False):
     return "\n".join(result) + "\n"
 
 
-def structure(tree):
+# Repeated independent edits often touch different functions in one module.
+# Exact source bytes let unchanged bodies reuse their canonical AST dump.
+_BODY_DUMPS = {}
+
+
+def structure(tree, source=None):
     """Separate function bodies from the definitions executed at import time."""
     functions = {}
     occurrences = {}
     restore = []
+    lines = source.split("\n") if source is not None else None
 
     def visit(node, path):
         if isinstance(node, (*FUNCTION, ast.Lambda)):
@@ -163,7 +169,17 @@ def structure(tree):
                 first = min([node.lineno] + [d.lineno for d in node.decorator_list])
                 body = ast.Module(body=node.body, type_ignores=[])
                 node.body = [ast.Pass()]
-            functions[key] = (first, node.end_lineno, ast.dump(body), body)
+            if lines is None or is_lambda:
+                digest = ast.dump(body)
+            else:
+                segment = "\n".join(lines[node.lineno - 1:node.end_lineno])
+                digest = _BODY_DUMPS.get(segment)
+                if digest is None:
+                    digest = ast.dump(body)
+                    if len(_BODY_DUMPS) >= 8192:
+                        _BODY_DUMPS.clear()
+                    _BODY_DUMPS[segment] = digest
+            functions[key] = (first, node.end_lineno, digest, body)
             return
         child_path = (*path, node.name) if isinstance(node, ast.ClassDef) else path
         for child in ast.iter_child_nodes(node):
@@ -182,7 +198,7 @@ def syntax(path, source):
     """Share the parsed and compiled source across selectors and fallback checks."""
     tree = ast.parse(source, path)
     code = compile(tree, path, "exec", dont_inherit=True)
-    return tree, structure(tree), code
+    return tree, structure(tree, source), code
 
 
 def bypasses_executor_result(old, new):

@@ -1,5 +1,6 @@
 """Fall back when edits can change late dispatch or import resolution."""
 import ast
+from collections import deque
 from functools import lru_cache
 import re
 
@@ -10,6 +11,9 @@ DISPATCH = re.compile(r"(?:[A-Z_]+_)?(?:TRANSFORMS|FUNCTIONS|PARSERS|TYPE_MAPPIN
 WORDS = re.compile(r"\b(?:[A-Z_]+_)?(?:TRANSFORMS|FUNCTIONS|PARSERS|TYPE_MAPPING|HANDLERS|REGISTRY)\b"
                    r"|\b(?:classes|_classes|import_module|__import__)\b")
 ROUTERS = {"import_module", "__import__"}
+ROUTER_WORDS = re.compile(r"\b(?:import_module|__import__)\b")
+FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+SCOPES = (*FUNCTIONS, ast.ClassDef)
 
 
 def name(node):
@@ -33,7 +37,17 @@ def dispatch(node):
 def bindings(path, source):
     tree = syntax(path, source)[0]
     state = []
-    for item in ast.walk(tree):
+    lines = source.split("\n")
+    pending = deque([tree])
+    while pending:
+        item = pending.popleft()
+        scope = None
+        if isinstance(item, SCOPES):
+            start = min((node.lineno for node in item.decorator_list), default=item.lineno)
+            scope = "\n".join(lines[start - 1:item.end_lineno])
+            if scope.isascii() and not WORDS.search(scope):
+                continue
+        pending.extend(ast.iter_child_nodes(item))
         if isinstance(item, (ast.Assign, ast.Delete)):
             if any(dispatch(target) for target in item.targets):
                 state.append(ast.dump(item))
@@ -45,7 +59,9 @@ def bindings(path, source):
                     isinstance(item.func, ast.Attribute) and item.func.attr in {"update", "clear", "pop", "popitem", "setdefault"}
                     and dispatch(item.func.value)):
                 state.append(ast.dump(item))
-        elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        elif isinstance(item, FUNCTIONS):
+            if scope.isascii() and not ROUTER_WORDS.search(scope):
+                continue
             # Record the routing body too. A changed local can affect which
             # module is loaded even when the import call text is identical.
             if any(isinstance(call, ast.Call) and name(call.func) in ROUTERS
