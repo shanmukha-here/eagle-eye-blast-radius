@@ -690,6 +690,7 @@ class Execute:
         except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
             self.tpc = None
         self.case_map = None
+        self.case_kept = set()
         try:
             data = marshal.loads(lzma.decompress(Path(swap.base_map).with_name("zcase.xz").read_bytes()))
             if data["ids"] == swap.ids:
@@ -831,6 +832,8 @@ class Execute:
                 self.stats["case_dropped"] = self.stats.get("case_dropped", 0) + 1
                 selected = rest
                 plan = after
+            else:
+                self.case_kept.add(n)
         return plan
 
     def replay_long(self, raw, plan, mask, changed, ranges=None, unswapped=0):
@@ -886,7 +889,8 @@ class Execute:
             upside = (s.cost(plan) - s.cost(after)) / 1000
             self.stats[name + "_queries"] = len(affected)
             self.stats[name + "_estimate"] = round(estimate, 3)
-            if estimate > 0.7 * upside or estimate > self.remaining:
+            # Docker replays cost 0.94 to 1.03 of the estimate, and a changed digest stops early.
+            if estimate > 0.9 * upside or estimate > self.remaining:
                 continue
             wall = min(self.deadline - time.monotonic(), 10.0 + 3.0 * estimate)
             digests = self.zygote.tpc(raw, [(name, i) for i in affected], 2.0 * estimate + 1.0, wall,

@@ -549,14 +549,19 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             # other replay runs (every test counts as unswapped).
             swapped[i] = raw, mask, found[2], found[4], found[5] | found[0] | 1, found[6]
     order = sorted(swapped, key=lambda i: -scheduler.cost(planned[i][2]))
+    # Tests whose affected fixture cases failed or did not finish in the zygote.
+    case_kept = {}
     try:
         for i in order:
             raw, mask, changed, ranges, unswapped, items = swapped[i]
             path, text, plan, nearby, passed, attempted, stats = planned[i]
             begin = seconds()
             executor.stats = {}
+            executor.case_kept = set()
             plan = executor.replay_long(raw, plan, mask, changed, ranges, unswapped)
             plan = executor.replay_cases(raw, plan, mask, changed, ranges, unswapped, items)
+            if executor.case_kept:
+                case_kept[i] = executor.case_kept
             long_stats = executor.stats
             if not unswapped:
                 plan = executor.refine(raw, plan, mask)
@@ -600,7 +605,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 outputs[completed] = finish(prior, checker)
             _, text, plan, _, passed, attempted, _ = record
             lane = lanes[rank % len(lanes)]
-            launched = lane.submit(text, plan, passed, attempted, index in accepted)
+            launched = lane.submit(text, plan, passed, attempted, index in accepted,
+                                   case_kept.get(index, frozenset()))
             pending.append((index, record, lane if launched else None))
         while pending:
             completed, prior, checker = pending.popleft()
