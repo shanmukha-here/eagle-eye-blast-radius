@@ -540,19 +540,23 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             plan = scheduler.repack(keep, plan) if keep else []
             planned[i] = path, text, plan, nearby, passed, attempted, stats
         if found[3]:
-            swapped[i] = raw, mask, found[2], found[4], 0
+            swapped[i] = raw, mask, found[2], found[4], 0, None
         elif found[5] != found[0] and swap_text(raw):
             # Fixture or member edits: replay only tests they cannot reach, on the code part.
-            swapped[i] = swap_text(raw), mask, found[2], found[4], found[5]
+            swapped[i] = swap_text(raw), mask, found[2], found[4], found[5], None
+        elif found[6] and not found[2]:
+            # SQL fixture edits only: replay the changed items of audited fixture tests; no
+            # other replay runs (every test counts as unswapped).
+            swapped[i] = raw, mask, found[2], found[4], found[5] | found[0] | 1, found[6]
     order = sorted(swapped, key=lambda i: -scheduler.cost(planned[i][2]))
     try:
         for i in order:
-            raw, mask, changed, ranges, unswapped = swapped[i]
+            raw, mask, changed, ranges, unswapped, items = swapped[i]
             path, text, plan, nearby, passed, attempted, stats = planned[i]
             begin = seconds()
             executor.stats = {}
             plan = executor.replay_long(raw, plan, mask, changed, ranges, unswapped)
-            plan = executor.replay_cases(raw, plan, mask, changed, ranges, unswapped)
+            plan = executor.replay_cases(raw, plan, mask, changed, ranges, unswapped, items)
             long_stats = executor.stats
             if not unswapped:
                 plan = executor.refine(raw, plan, mask)

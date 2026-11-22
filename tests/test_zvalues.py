@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import types
 import unittest
 
 import zpatch
@@ -123,6 +124,83 @@ class ValueEditTests(unittest.TestCase):
         self.assertIsNone(c._reach("sqlglot/x.py", "A", "n", results, {"sqlglot/x.py": new}))
         results["sqlglot/x.py"]["changed"] = [("sqlglot/x.py", "q", 4)]
         self.assertIsNotNone(c._reach("sqlglot/x.py", "A", "n", results, {"sqlglot/x.py": new}))
+
+    def test_fixture_items_and_cases_follow_the_pinned_loaders(self):
+        import zstage
+        # The two loaders of the pinned tests/helpers.py.
+        helpers = (
+            "import os\nFILE_DIR = os.path.dirname(__file__)\n"
+            "FIXTURES_DIR = os.path.join(FILE_DIR, 'fixtures')\n"
+            "def _filter_comments(s):\n"
+            "    return '\\n'.join([line for line in s.splitlines() if line and not line.startswith('--')])\n"
+            "def load_sql_fixtures(filename):\n"
+            "    with open(os.path.join(FIXTURES_DIR, filename), encoding='utf-8') as f:\n"
+            "        lines = []\n"
+            "        for line in _filter_comments(f.read()).splitlines():\n"
+            "            lines.append(line)\n"
+            "            if not line.startswith('#'):\n"
+            "                yield '\\n'.join(lines)\n"
+            "                lines.clear()\n"
+            "def load_sql_fixture_pairs(filename):\n"
+            "    with open(os.path.join(FIXTURES_DIR, filename), encoding='utf-8') as f:\n"
+            "        statements = _filter_comments(f.read()).split(';')\n"
+            "        for i in range(0, len(statements), 2):\n"
+            "            if i + 1 < len(statements):\n"
+            "                yield {}, statements[i].strip(), statements[i + 1].strip()\n")
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(__file__))) as root:
+            os.makedirs(os.path.join(root, "tests", "fixtures"))
+            with open(os.path.join(root, "tests", "helpers.py"), "w") as f:
+                f.write(helpers)
+            old = "SELECT 1;\n1;\n-- note\nSELECT 2;\n2;\n"
+            with open(os.path.join(root, "tests", "fixtures", "a.sql"), "w") as f:
+                f.write(old)
+            c = zstage.Candidates.__new__(zstage.Candidates)
+            c.base, c.helpers = zstage.Path(root), None
+            found = c.fixture_items("tests/fixtures/a.sql", old.replace("SELECT 2", "SELECT 3"))
+            self.assertEqual(found, {"load_sql_fixture_pairs": ({1}, 2), "load_sql_fixtures": ({2}, 4)})
+            # Comments are not items; an added item changes the count, so no loader is offered.
+            self.assertEqual(c.fixture_items("tests/fixtures/a.sql", old.replace("note", "other"))
+                             ["load_sql_fixture_pairs"], (set(), 2))
+            self.assertEqual(c.fixture_items("tests/fixtures/a.sql", old + "SELECT 4;\n4;\n"), {})
+        r = zstage.Execute.__new__(zstage.Execute)
+        name = "tests/test_serde.py::TestSerde::test_serde"
+        r.swap = types.SimpleNamespace(ids=["x", name],
+                                       fixtures={"opens": {"tests/fixtures/a.sql": 0b10}})
+        record = {"cases": [("a.sql", 0), ("a.sql", 1), ("a.sql", 2), ("a.sql", 3)]}
+        items = {"a.sql": {"load_sql_fixtures": ({3}, 4)}}
+        self.assertEqual(r._fixture_cases(1, record, items), 0b1000)
+        self.assertIsNone(r._fixture_cases(1, record, {"a.sql": {"load_sql_fixtures": ({3}, 5)}}))
+        self.assertIsNone(r._fixture_cases(1, record, {"a.sql": {"load_sql_fixture_pairs": ({1}, 2)}}))
+        # A file the test neither opens nor loads leaves it unaffected.
+        self.assertEqual(r._fixture_cases(1, record, {"b.sql": {"load_sql_fixtures": ({0}, 1)}}), 0)
+        r.swap.ids = ["x", "tests/test_executor.py::TestExecutor::test_execute_tpch"]
+        self.assertIsNone(r._fixture_cases(1, record, items))
+        r.swap.ids = ["x", name]
+        r.swap.fixtures = {"opens": {"tests/fixtures/a.sql": 0b01}}
+        self.assertIsNone(r._fixture_cases(1, record, items))
+
+    def test_zygote_serves_fixtures_to_the_helper_loaders_only(self):
+        import zexec
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(__file__))) as root:
+            os.makedirs(os.path.join(root, "tests", "fixtures"))
+            path = os.path.join(root, "tests", "fixtures", "a.sql")
+            with open(path, "w") as f:
+                f.write("old\n")
+            module = types.ModuleType("fake_helpers")
+            module.__file__ = os.path.join(root, "tests", "helpers.py")
+            sys.modules["fake_helpers"] = module
+            try:
+                zexec._serve_fixtures(root, {os.path.abspath(path): "new\n"})
+                with module.open(path, encoding="utf-8") as f:
+                    self.assertEqual(f.read(), "new\n")
+                with open(path) as f:
+                    self.assertEqual(f.read(), "old\n")
+                with self.assertRaises(OSError):
+                    module.open(path, "rb")
+            finally:
+                del sys.modules["fake_helpers"]
+            with self.assertRaises(RuntimeError):
+                zexec._serve_fixtures(root, {path: "new\n"})
 
 
 if __name__ == "__main__":

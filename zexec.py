@@ -230,11 +230,15 @@ def _apply(base, patch, index):
 
     files = split_diff(patch, physical=True)
     serve = {}
+    fixtures = {}
     for path, hunks in files.items():
         filename = os.path.join(base, path)
         with open(filename, encoding="utf-8", newline="") as f:
             old = f.read()
         new = patched(old, hunks, physical=True)
+        if path.startswith("tests/fixtures/") and path.endswith(".sql"):
+            fixtures[os.path.normpath(os.path.abspath(filename))] = new.replace("\r\n", "\n").replace("\r", "\n")
+            continue
         result = zpatch.analyze(path, old, new, filename)
         name, package = _module_name(path)
         serve[name] = (filename, new, package)
@@ -269,6 +273,33 @@ def _apply(base, patch, index):
                 if func.__doc__ != doc and doc is not None:
                     func.__doc__ = doc
     sys.meta_path.insert(0, _Source(serve))
+    if fixtures:
+        _serve_fixtures(base, fixtures)
+
+
+def _serve_fixtures(base, texts):
+    """Make the tests/helpers.py loaders read the patched text of SQL fixture files (in the
+    forked child only). Other readers still see the pin; the stage replays only tests that
+    read their fixtures through these loaders."""
+    import builtins
+    import io
+
+    helpers = os.path.join(base, "tests", "helpers.py")
+    modules = [m for m in list(sys.modules.values())
+               if getattr(m, "__file__", None) and os.path.abspath(m.__file__) == helpers]
+    if not modules:
+        raise RuntimeError("tests/helpers.py not loaded")
+
+    def opener(file, mode="r", *args, **kwargs):
+        text = texts.get(os.path.normpath(os.path.abspath(file))) if isinstance(file, str) else None
+        if text is None:
+            return builtins.open(file, mode, *args, **kwargs)
+        if mode not in ("r", "rt"):
+            raise OSError("fixture opened for " + mode)
+        return io.StringIO(text)
+
+    for module in modules:
+        module.open = opener
 
 
 def _isolated(work):

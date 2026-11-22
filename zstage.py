@@ -6,6 +6,7 @@ tests that started it in a fork of the fully imported suite. Code that already r
 importing is excluded, because its effects persist without re-running it.
 """
 
+import io
 import lzma
 import marshal
 import os
@@ -62,6 +63,7 @@ class Candidates:
         except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
             self.sinks = None
         self.fixtures = None
+        self.helpers = None
         try:
             self.fixtures = marshal.loads(lzma.decompress(Path(map_path).with_name("zfix.xz").read_bytes()))
             self.fixtures["collect"] = set(self.fixtures["collect"])
@@ -363,6 +365,7 @@ class Candidates:
         # Tests that fixture or member edits may reach; the zygote applies neither.
         unswapped = 0
         texts = {}
+        items = {}
         for path, hunks in files.items():
             if path.startswith("tests/fixtures/") and not path.endswith(".py"):
                 # A data file reaches only the tests that open it while they run.
@@ -375,6 +378,8 @@ class Candidates:
                     self.stats.setdefault("decline", "25:except (OSError, UnicodeError, UnknownCh")
                     return None
                 opens = self.fixtures["opens"].get(path, 0)
+                if path.endswith(".sql"):
+                    items[path[len("tests/fixtures/"):]] = self.fixture_items(path, new_fixture)
                 if path in INPUT_ONLY_READERS:
                     from narrow import fixture_inputs
                     if fixture_inputs(self.source(path)) == fixture_inputs(new_fixture):
@@ -497,7 +502,43 @@ class Candidates:
                 return None
             mask |= self.masks.get(key, 0)
             changed.add(key)
-        return mask, results, changed, executable, ranges_out, unswapped
+        if not all(p.startswith("tests/fixtures/") and p.endswith(".sql") for p in files):
+            items = {}
+        return mask, results, changed, executable, ranges_out, unswapped, items
+
+    def fixture_items(self, path, new):
+        """{loader: (indexes of the items that differ, item count)} for an edit of a SQL
+        fixture, per tests/helpers.py loader of the pin that yields as many items after it."""
+        if self.helpers is None:
+            namespace = {"__file__": str(self.base / "tests" / "helpers.py"), "__name__": "helpers"}
+            try:
+                exec(compile(self.source("tests/helpers.py"), namespace["__file__"], "exec",
+                             dont_inherit=True), namespace)
+            except Exception:
+                namespace = {}
+            self.helpers = namespace
+        out = {}
+        name = path[len("tests/fixtures/"):]
+        for loader in FIXTURE_LOADERS:
+            if loader not in self.helpers:
+                continue
+            found = []
+            for text in (self.source(path), new):
+                self.helpers["open"] = lambda *args, text=text, **kwargs: io.StringIO(_universal(text))
+                try:
+                    found.append(list(self.helpers[loader](name)))
+                except Exception:
+                    break
+                finally:
+                    self.helpers.pop("open", None)
+            if len(found) == 2 and len(found[0]) == len(found[1]):
+                out[loader] = ({i for i, (a, b) in enumerate(zip(*found)) if a != b}, len(found[0]))
+        return out
+
+
+def _universal(text):
+    """Text as a file opened in text mode reads it (universal newlines)."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _qualnames(text, filename):
@@ -554,6 +595,28 @@ PROTOCOL_NAMES = {
     "id", "shortDescription", "countTestCases", "subTest", "default", "load_tests",
 }
 PROTOCOL_PREFIXES = ("test", "visit_", "do_", "handle_", "pytest_")
+FIXTURE_LOADERS = ("load_sql_fixture_pairs", "load_sql_fixtures")
+# Fixture tests whose test method reads each of its SQL fixture files only through one
+# tests/helpers.py loader, handling and asserting one item per loop iteration (audited in the
+# pinned source: check_file users, test_annotate_funcs, test_annotate_types,
+# test_qualify_columns__invalid, test_serde, test_identity, test_partial, test_pretty). The
+# executor tests read theirs once in setUpClass and are not listed.
+FIXTURE_CONSUMERS = {
+    **{"tests/test_optimizer.py::TestOptimizer::" + name: "load_sql_fixture_pairs" for name in (
+        "test_annotate_funcs", "test_annotate_types", "test_canonicalize",
+        "test_canonicalize_internal_names", "test_eliminate_ctes", "test_eliminate_joins",
+        "test_eliminate_subqueries", "test_isolate_table_selects", "test_merge_subqueries",
+        "test_normalize", "test_normalize_identifiers", "test_optimize", "test_optimize_joins",
+        "test_pushdown_cte_alias_columns", "test_pushdown_predicates", "test_pushdown_projection",
+        "test_qualify_columns", "test_qualify_columns__with_invisible", "test_qualify_tables",
+        "test_quote_identifiers", "test_simplify", "test_tpcds", "test_tpch",
+        "test_unnest_subqueries")},
+    "tests/test_optimizer.py::TestOptimizer::test_qualify_columns__invalid": "load_sql_fixtures",
+    "tests/test_serde.py::TestSerde::test_serde": "load_sql_fixtures",
+    "tests/test_transpile.py::TestTranspile::test_identity": "load_sql_fixtures",
+    "tests/test_transpile.py::TestTranspile::test_partial": "load_sql_fixtures",
+    "tests/test_transpile.py::TestTranspile::test_pretty": "load_sql_fixture_pairs",
+}
 ATTR_OPS = {"LOAD_ATTR", "STORE_ATTR", "DELETE_ATTR", "LOAD_SUPER_ATTR"}
 WALL0 = time.monotonic()
 LONG_MS = 3000
@@ -654,8 +717,37 @@ class Execute:
             affected |= found
         return affected
 
-    def replay_cases(self, raw, plan, mask, changed, ranges=None, unswapped=0):
-        """Drop a fixture test whose affected cases pass when run alone on the patched code."""
+    def _fixture_cases(self, number, record, items):
+        """Bit mask of the record's cases whose fixture item a fixture-only commit changed, or
+        None unless the test reads every edited file only through its audited loader and that
+        loader yields as many items as before."""
+        loader = FIXTURE_CONSUMERS.get(self.swap.ids[number])
+        if loader is None:
+            return None
+        cases = record["cases"]
+        counts = {}
+        for name, _ in cases:
+            counts[name] = counts.get(name, 0) + 1
+        affected = 0
+        for name, changes in items.items():
+            opened = self.swap.fixtures["opens"].get("tests/fixtures/" + name, 0) >> number & 1
+            if bool(opened) != (name in counts):
+                return None
+            if not opened:
+                continue
+            found = changes.get(loader)
+            if found is None or found[1] != counts[name]:
+                return None
+            for j, (other, i) in enumerate(cases):
+                if other == name and i in found[0]:
+                    affected |= 1 << j
+        return affected
+
+    def replay_cases(self, raw, plan, mask, changed, ranges=None, unswapped=0, items=None):
+        """Drop a fixture test whose affected cases pass when run alone on the patched code.
+
+        ``items`` describes a commit that edits SQL fixtures only; the zygote then serves the
+        new fixture text to the loaders, and the affected cases are the changed items."""
         if not REPLAY_CASES or self.case_map is None or self.zygote is None or not plan \
                 or time.monotonic() > self.deadline - 10:
             return plan
@@ -668,12 +760,22 @@ class Execute:
         for line in raw.splitlines():
             if line.startswith("diff --git a/"):
                 skip |= self.swap.opens.get(line[len("diff --git a/"):].split(" b/")[0], 0)
+        if items is not None:
+            if changed or self.swap.fixtures is None:
+                return plan
+            skip = self.swap.opaque | self.swap.spawn
         options = []
         for n in selected:
             record = tests.get(n)
             if record is None or skip >> n & 1:
                 continue
-            affected = self._affected_cases(n, record, changed, ranges)
+            if items is not None:
+                affected = self._fixture_cases(n, record, items)
+            elif record.get("fixture_only"):
+                # Short tests are mapped for fixture edits only (no code or line owners).
+                continue
+            else:
+                affected = self._affected_cases(n, record, changed, ranges)
             if not affected:
                 continue
             cases = record["cases"]
