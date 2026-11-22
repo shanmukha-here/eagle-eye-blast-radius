@@ -525,7 +525,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         if keep != selected:
             plan = scheduler.repack(keep, plan) if keep else []
             planned[i] = path, text, plan, nearby, passed, attempted, stats
-        swapped[i] = raw, mask, found[2]
+        if found[3]:
+            swapped[i] = raw, mask, found[2]
     executor = Execute(swap, scheduler, base, [t["id"] for t in tests], len(patches))
     order = sorted(swapped, key=lambda i: -scheduler.cost(planned[i][2]))
     try:

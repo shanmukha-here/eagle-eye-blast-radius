@@ -121,6 +121,100 @@ def _children(code):
     return [c for c in code.co_consts if isinstance(c, types.CodeType)]
 
 
+def _members(tree):
+    """{(scope, name): [def nodes]} for functions directly in module or class bodies, with
+    the list holding each body's statements so a def can be taken out."""
+    out = {}
+
+    def visit(body, scope):
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                visit(node.body, scope + [node.name])
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                out.setdefault((".".join(scope), node.name), []).append((node, body))
+
+    visit(tree.body, [])
+    return out
+
+
+def _passthrough(node):
+    """def N(self, *args, **kwargs): return super().N(*args, **kwargs)"""
+    a = node.args
+    if a.posonlyargs or a.kwonlyargs or a.defaults or len(a.args) != 1 or not a.vararg \
+            or not a.kwarg or node.decorator_list or node.returns or len(node.body) != 1:
+        return False
+    ret = node.body[0]
+    if not isinstance(ret, ast.Return) or not isinstance(ret.value, ast.Call):
+        return False
+    call = ret.value
+    f = call.func
+    return (isinstance(f, ast.Attribute) and f.attr == node.name and isinstance(f.value, ast.Call)
+            and isinstance(f.value.func, ast.Name) and f.value.func.id == "super"
+            and not f.value.args and not f.value.keywords and len(call.args) == 1
+            and isinstance(call.args[0], ast.Starred) and isinstance(call.args[0].value, ast.Name)
+            and call.args[0].value.id == a.vararg.arg and len(call.keywords) == 1
+            and call.keywords[0].arg is None and isinstance(call.keywords[0].value, ast.Name)
+            and call.keywords[0].value.id == a.kwarg.arg)
+
+
+def _split_members(old_tree, new_tree):
+    """Take out functions that exist on one side only; return (added, removed) as
+    (scope, name, node) lists."""
+    old_m, new_m = _members(old_tree), _members(new_tree)
+    added, removed = [], []
+    for key in set(old_m) | set(new_m):
+        o, n = old_m.get(key, []), new_m.get(key, [])
+        if len(o) == len(n):
+            continue
+        if o and n:
+            raise Unsupported("member-count")
+        for node, body in o or n:
+            if isinstance(node, ast.AsyncFunctionDef) or node.decorator_list:
+                raise Unsupported("member-kind")
+            body.remove(node)
+            (removed if o else added).append((key[0], key[1], node))
+    return added, removed
+
+
+def names(text, tree=None):
+    """(identifiers, identifier strings, compared names, non-call references) of a source."""
+    if tree is None:
+        tree = ast.parse(text)
+    ids, strings, compared, loads = set(), set(), set(), set()
+    called = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            called.add(id(node.func))
+        elif isinstance(node, ast.Compare):
+            for side in [node.left] + node.comparators:
+                if isinstance(side, ast.Attribute):
+                    compared.add(side.attr)
+                elif isinstance(side, ast.Name):
+                    compared.add(side.id)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            ids.add(node.id)
+            if id(node) not in called:
+                loads.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            ids.add(node.attr)
+            if id(node) not in called:
+                loads.add(node.attr)
+        elif isinstance(node, ast.alias):
+            for part in node.name.split(".") + ([node.asname] if node.asname else []):
+                ids.add(part)
+                loads.add(part)
+        elif isinstance(node, ast.keyword) and node.arg:
+            ids.add(node.arg)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            ids.update(node.names)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            for part in node.value.replace(".", " ").split():
+                if part.isidentifier():
+                    strings.add(part)
+    return sorted(ids), sorted(strings), sorted(compared), sorted(loads)
+
+
 def analyze(path, old_text, new_text, filename):
     """Return dict(changed=[keys], swaps=[(key, new_code)], docs=[...], defaults=[...])."""
     try:
@@ -128,6 +222,10 @@ def analyze(path, old_text, new_text, filename):
         new_tree = ast.parse(new_text)
     except SyntaxError as e:
         raise Unsupported("syntax") from e
+    added, removed = _split_members(old_tree, new_tree)
+    member_names = None
+    if added or removed:
+        member_names = names(new_text, new_tree)
     a, b = _Normalize(), _Normalize()
     try:
         old_norm = ast.dump(a.visit(old_tree))
@@ -164,18 +262,25 @@ def analyze(path, old_text, new_text, filename):
             swaps.append((key, new))
         if is_function and len(old.co_freevars) != len(new.co_freevars):
             raise Unsupported("closure")
-        oc, nc = _children(old), _children(new)
+        oc = [c for c in _children(old) if c.co_qualname not in gone]
+        nc = [c for c in _children(new) if c.co_qualname not in new_only]
         if len(oc) != len(nc):
             raise Unsupported("children")
         for o, n in zip(oc, nc):
             walk(o, n, here)
 
+    gone = {(scope + "." if scope else "") + name for scope, name, _ in removed}
+    new_only = {(scope + "." if scope else "") + name for scope, name, _ in added}
     walk(old_code, new_code, [])
     unique = {}
     for key, code in swaps:
         unique[key] = code
     return {"changed": changed, "swaps": list(unique.items()), "docs": docs, "defaults": defaults,
-            "scoped": scoped, "old_text": old_text}
+            "scoped": scoped, "old_text": old_text,
+            "added": [(scope, name, _passthrough(node)) for scope, name, node in added],
+            "removed": [(scope, name, (path, (scope + "." if scope else "") + name, node.lineno))
+                        for scope, name, node in removed],
+            "names": member_names}
 
 
 def changed_lines(hunks):

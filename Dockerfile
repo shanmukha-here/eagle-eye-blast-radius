@@ -37,7 +37,7 @@ COPY risk_features.py risk_model.py risk_policy.py risk_model.bin ./
 COPY recovery.py ./
 COPY cold_import.py ./
 
-COPY zstage.py zpatch.py zrun.py zexec.py ztpc_units.py zmap.xz zmap.xz.lines ztpc.xz ./
+COPY zstage.py zpatch.py zrun.py zexec.py ztpc_units.py zmap.xz zmap.xz.lines zclass.xz ztpc.xz ./
 
 # These maps were generated from the same pinned source and test wheels.
 COPY --from=maps /frozen/app/ /app/

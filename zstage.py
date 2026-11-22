@@ -44,6 +44,12 @@ class Candidates:
             self.lines = marshal.loads(lzma.decompress(Path(str(map_path) + ".lines").read_bytes()))
         except (OSError, ValueError, EOFError, lzma.LZMAError):
             self.lines = {}
+        self.classes = None
+        try:
+            self.classes = marshal.loads(lzma.decompress(Path(map_path).with_name("zclass.xz").read_bytes()))
+        except (OSError, ValueError, EOFError, lzma.LZMAError):
+            self.classes = None
+        self.inverted = None
         self.by_name = {}
         for key in list(self.masks) + list(self.preload):
             self.by_name.setdefault((key[0], key[1]), []).append(key)
@@ -53,6 +59,88 @@ class Candidates:
     def source(self, path):
         with open(self.base / path, encoding="utf-8", newline="") as f:
             return f.read()
+
+    def _refs(self, name, kind, patched):
+        """Files other than ``patched`` whose pinned source has ``name`` as a ``kind``
+        (0 identifier, 1 string, 2 compared, 3 non-call reference), plus patched files whose
+        new source does."""
+        if self.inverted is None:
+            self.inverted = inverted = [{}, {}, {}, {}]
+            for path, sets in self.classes["files"].items():
+                if sets is None:
+                    for table in inverted:
+                        table.setdefault(None, set()).add(path)
+                    continue
+                for table, values in zip(inverted, sets):
+                    for value in values:
+                        table.setdefault(value, set()).add(path)
+        found = set(self.inverted[kind].get(name, ())) | set(self.inverted[kind].get(None, ()))
+        found -= set(patched)
+        for path, sets in patched.items():
+            if sets is None or name in sets[kind]:
+                found.add(path)
+        return found
+
+    def _resolve(self, path, scope, name):
+        """Code entries that instances and subclasses of the class resolved ``name`` to on the
+        pin, below the class itself, and whether some subclass had no such attribute; None
+        when unknown."""
+        data = self.classes
+        number = data["unique"].get((path, scope))
+        if number is None or number < 0:
+            return None
+        entries, absent = set(), False
+        for record_path, mro, own in data["classes"]:
+            if number not in mro:
+                continue
+            at = mro.index(number)
+            if any(not isinstance(m, str) and name in data["classes"][m][2] for m in mro[:at]):
+                continue
+            for m in mro[at + 1:]:
+                if isinstance(m, str):
+                    if name in data["external"].get(m, ()) or m not in data["external"]:
+                        return None
+                    continue
+                table = data["classes"][m][2]
+                if name in table:
+                    if table[name] is None:
+                        return None
+                    entries.add((table[name][0], tuple(table[name][1])))
+                    break
+            else:
+                absent = True
+        return entries, absent
+
+    def _members(self, path, result, patched):
+        """Keys whose starts cover every test an added or deleted method can affect, or None."""
+        if self.classes is None:
+            return None
+        keys = []
+        for scope, name, passthrough in result["added"]:
+            if name.startswith("__") or self._refs(name, 1, patched) or self._refs(name, 2, patched):
+                return None
+            if not scope:
+                # A new module function is unseen unless something names it.
+                if self._refs(name, 0, patched):
+                    return None
+                continue
+            found = self._resolve(path, scope, name)
+            if found is None:
+                return None
+            entries, absent = found
+            if absent and (self._refs(name, 0, patched)
+                           or (name.endswith("_sql") and not name.startswith("_"))):
+                return None
+            if passthrough and not absent and all(kind == "function" for kind, _ in entries):
+                # Calls reach the same inherited function with the same arguments.
+                continue
+            keys.extend(key for _, key in entries)
+        for scope, name, key in result["removed"]:
+            if name.startswith("__") or self._refs(name, 1, patched) or self._refs(name, 2, patched) \
+                    or self._refs(name, 3, patched):
+                return None
+            keys.append(tuple(key))
+        return keys
 
     def analyze(self, text):
         """Return (mask of tests that may change, analyses) or None when unsupported."""
@@ -65,6 +153,8 @@ class Candidates:
         mask = self.opaque
         results = {}
         changed = set()
+        executable = True
+        member_files = {}
         for path, hunks in files.items():
             if not (path.startswith("sqlglot/") and path.endswith(".py")):
                 return None
@@ -75,6 +165,12 @@ class Candidates:
             except (OSError, UnicodeError, UnknownChange, zpatch.Unsupported, ValueError,
                     RecursionError, MemoryError, TypeError):
                 return None
+            if result["added"] or result["removed"]:
+                member_files[path] = result["names"]
+            results[path] = result
+        for path, result in results.items():
+            hunks = files[path]
+            old = result["old_text"]
             line_keys = {}
             file_lines = self.lines.get(path)
             if file_lines is not None and result["changed"]:
@@ -93,6 +189,13 @@ class Candidates:
                 except (SyntaxError, ValueError, RecursionError, MemoryError):
                     line_keys = {}
             keys = list(result["changed"])
+            if result["added"] or result["removed"]:
+                # The zygote cannot add or delete methods, so these commits are not executed.
+                executable = False
+                more = self._members(path, result, member_files)
+                if more is None:
+                    return None
+                keys.extend(more)
             for name, _, _ in result["defaults"]:
                 found = self.by_name.get((path, name))
                 if not found:
@@ -108,12 +211,14 @@ class Candidates:
                     mask |= self.masks.get(key, 0)
                 changed.add(key)
             mask |= self.opens.get(path, 0)
-            results[path] = result
-        return mask, results, changed
+        return mask, results, changed, executable
 
 
 WALL0 = time.monotonic()
 LONG_MS = 3000
+# Stages that run tests in the zygote; each is worth its CPU only where it removes workers.
+REPLAY_LONG = True
+REFINE_SHORT = True
 
 
 class Execute:
@@ -148,7 +253,7 @@ class Execute:
 
     def replay_long(self, raw, plan, mask, changed):
         """Drop a TPC executor test when every query that starts changed code digests the same."""
-        if self.tpc is None or not plan or time.monotonic() > self.deadline - 10:
+        if not REPLAY_LONG or self.tpc is None or not plan or time.monotonic() > self.deadline - 10:
             return plan
         s = self.scheduler
         selected = {n for group in plan for n in group}
@@ -188,7 +293,7 @@ class Execute:
 
     def refine(self, raw, plan, mask):
         self.stats = {}
-        if self.zygote is None or not plan or time.monotonic() > self.deadline - 5:
+        if not REFINE_SHORT or self.zygote is None or not plan or time.monotonic() > self.deadline - 5:
             return plan
         s = self.scheduler
         selected = {n for group in plan for n in group}
