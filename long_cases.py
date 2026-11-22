@@ -223,7 +223,12 @@ class LongCases:
                 return None
             path, = edits
             return [self.index.mask(f"{m}:{path}") for m in range(len(METHODS))]
-        return self.body_masks(changes)
+        masks = self.body_masks(changes)
+        if len(changes) > 1 or any(anchors for sites in changes.values() for _, _, (_, anchors, _) in sites):
+            # These wider ranges route observed cases to replay. An absent
+            # hit is insufficient to clear a long test on these diff shapes.
+            return [mask or 1 for mask in masks]
+        return masks
 
     def body_masks(self, changes):
         masks = [0] * len(METHODS)

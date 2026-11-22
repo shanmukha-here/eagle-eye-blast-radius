@@ -28,7 +28,7 @@ from startup import Startup
 from narrow import Narrow
 from observation_index import ObservationIndex
 from surface import Surface
-from parser_signal import unexecuted_return
+from parser_signal import observes_patch, unexecuted_return
 from reference_replay import ReferenceReplay
 from long_gate import LongGate
 from long_cases import LongCases
@@ -337,6 +337,12 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                 if retained != active:
                     precision.stats["ordinary_long_unobserved"] = len(active - retained)
                     plan = scheduler.repack(selected.difference(active - retained), plan)
+        if (patch_text is not None and parser_id is not None
+                and any(parser_id in group for group in plan)
+                and not observes_patch(impact, long_cases.index, parser_bit, patch_text)):
+            selected = {number for group in plan for number in group if number != parser_id}
+            plan = scheduler.repack(selected, plan)
+            precision.stats["parser_dependency_cleared"] = True
         if text:
             active_longs = {n for group in plan for n in group if n in long_cases.tests}
             if active_longs and not (long_cases.stats.get("long_cases_run") or queries.stats.get("tpcds_queries")):
@@ -368,6 +374,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         budget.remaining_patches = len(patches) - index
         beginning = seconds() if report else 0
         risk_text = None
+        patch_text = None
         queries.stats = {}
         precision.stats = {}
         long_cases.stats = {}
@@ -378,7 +385,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             if time.monotonic() >= deadline or path.stat().st_size > 1_000_000:
                 plan = fallback_plan
             else:
-                text = path.read_bytes().decode("utf-8")
+                patch_text = text = path.read_bytes().decode("utf-8")
                 if hard_topology(text):
                     emit(path, fallback_plan, beginning)
                     continue
