@@ -193,10 +193,15 @@ def structure(tree, source=None):
             node.body = body
 
 
+@lru_cache(maxsize=48)
+def syntax_tree(path, source):
+    return ast.parse(source, path)
+
+
 @lru_cache(maxsize=24)
 def syntax(path, source):
     """Share the parsed and compiled source across selectors and fallback checks."""
-    tree = ast.parse(source, path)
+    tree = syntax_tree(path, source)
     code = compile(tree, path, "exec", dont_inherit=True)
     return tree, structure(tree, source), code
 

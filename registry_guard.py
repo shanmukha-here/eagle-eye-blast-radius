@@ -4,7 +4,7 @@ from collections import deque
 from functools import lru_cache
 import re
 
-from impact import UnknownChange, patched, split_diff, syntax
+from impact import UnknownChange, patched, split_diff, syntax, syntax_tree
 
 
 DISPATCH = re.compile(r"(?:[A-Z_]+_)?(?:TRANSFORMS|FUNCTIONS|PARSERS|TYPE_MAPPING|HANDLERS|REGISTRY)$")
@@ -35,7 +35,7 @@ def dispatch(node):
 
 @lru_cache(maxsize=72)
 def bindings(path, source):
-    tree = syntax(path, source)[0]
+    tree = syntax_tree(path, source)
     state = []
     lines = source.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     pending = deque([tree])
@@ -82,6 +82,8 @@ def changes_routing(impact, text):
             if new_routing or WORDS.search(clean):
                 revised = patched(clean, hunks)
                 if bindings(path, clean) != bindings(path, revised):
+                    # Let ordinary selection handle invalid Python.
+                    syntax(path, revised)
                     return True
     except (OSError, UnknownChange, UnicodeError, SyntaxError, ValueError, RecursionError):
         # Leave other format and syntax decisions to the ordinary selector.
