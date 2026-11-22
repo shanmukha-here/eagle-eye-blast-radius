@@ -237,7 +237,7 @@ WALL0 = time.monotonic()
 LONG_MS = 3000
 # Stages that run tests in the zygote. Gates on hidden-like batches showed their CPU about
 # equal to the simulated time they save, so both are off.
-REPLAY_LONG = False
+REPLAY_LONG = True
 REFINE_SHORT = False
 # Replay TPC queries up to row execution only, when no affected query runs changed code there.
 REPLAY_PLANS = True

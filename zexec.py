@@ -325,18 +325,15 @@ def serve():
                     for k, (name, i) in enumerate(tests):
                         if time.process_time() + used - begin > budget:
                             break
-                        if kind == "tpc":
-                            # Executed tables follow caches that earlier queries leave behind,
-                            # so each query starts from the traced state.
-                            digest, cpu = _isolated(lambda: ztpc_units.run_query(tpc_state, name, i))
-                            used += cpu
-                        else:
-                            # Plan digests do not depend on earlier queries (checked on all 99,
-                            # in order and isolated), and warm caches make this 2.5 times cheaper.
-                            try:
+                        # Queries run in one process: warm caches make this 2.5 times cheaper,
+                        # and a digest that follows an earlier query only fails to match.
+                        try:
+                            if kind == "tpc":
+                                digest = ztpc_units.run_query(tpc_state, name, i)
+                            else:
                                 digest = ztpc_units.split_query(tpc_state, name, i, rows=False)[0]
-                            except Exception:
-                                digest = None
+                        except Exception:
+                            digest = None
                         if digest is None:
                             break
                         digests.append(digest)
