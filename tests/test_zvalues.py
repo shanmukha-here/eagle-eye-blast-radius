@@ -72,6 +72,55 @@ class ValueEditTests(unittest.TestCase):
         names = zstage._qualnames("class C:\n    def f(self, x=1):\n        def g():\n            pass\n", "x.py")
         self.assertEqual(names, {"C.f", "C.f.<locals>.g"})
 
+    def test_lookup_sites_split_constant_and_dynamic_names(self):
+        import ast
+        text = (
+            "def f(x, name, vars):\n"
+            "    getattr(x, 'copy_options')\n"
+            "    hasattr(x, name)\n"
+            "    getattr(x, f'{name}_sql')\n"
+            "    x.__dict__.get('Parser')\n"
+            "    x.eval(name)\n"
+            "    print(vars)\n"
+            "    return '{0.walk}'.format(x), dir(x)\n"
+        )
+        sites = [(n.lineno, w, s) for n, w, s in zpatch.lookup_sites(ast.parse(text))]
+        self.assertIn((2, {"copy_options"}, ""), sites)
+        self.assertIn((3, None, ""), sites)
+        self.assertIn((4, None, "_sql"), sites)
+        self.assertIn((5, {"Parser"}, ""), sites)
+        self.assertIn((8, {"walk"}, ""), sites)
+        self.assertIn((8, None, ""), sites)
+        self.assertFalse(any(line in (6, 7) for line, _, _ in sites))
+
+    def test_member_reach_masks_lookups_and_declines_new_ones(self):
+        import zstage
+        c = zstage.Candidates.__new__(zstage.Candidates)
+        c.classes = {"unique": {("sqlglot/x.py", "A"): 0, ("sqlglot/x.py", "E"): 1},
+                     "classes": [(("sqlglot/x.py", "A"), [0, "builtins.object"], {}),
+                                 (("sqlglot/x.py", "E"), [1, "builtins.Exception", "builtins.object"], {})]}
+        c.sinks = {"attrs": {"n": [("sqlglot/y.py", "g", 3, 4), ("sqlglot/y.py", "<module>", 1, 9)]},
+                   "constants": {"k"}, "dynamic": [("sqlglot/z.py", 7, "_sql", [("sqlglot/z.py", "h", 6)]),
+                                                   ("sqlglot/z.py", 8, "", [("sqlglot/z.py", "h", 6)])]}
+        c.preload = {("sqlglot/y.py", "<module>", 1)}
+        c.lines = {"sqlglot/y.py": {4: 0b10}, "sqlglot/z.py": {8: 0b1000}}
+        c.masks = {("sqlglot/z.py", "h", 6): 0b100}
+        old = "class A:\n    pass\n"
+        results = {"sqlglot/x.py": {"old_text": old, "changed": []}}
+        keys, mask = c._reach("sqlglot/x.py", "A", "n", results, {"sqlglot/x.py": old})
+        self.assertEqual(keys, [("sqlglot/y.py", "<module>", 1)])
+        self.assertEqual(mask, 0b1010)
+        self.assertIsNone(c._reach("sqlglot/x.py", "A", "k", results, {"sqlglot/x.py": old}))
+        self.assertIsNone(c._reach("sqlglot/x.py", "E", "n", results, {"sqlglot/x.py": old}))
+        self.assertIsNone(c._reach("sqlglot/x.py", "A", "close", results, {"sqlglot/x.py": old}))
+        # A new lookup in the patched file, outside changed code, is not proven.
+        new = old + "\ndef q(o):\n    return getattr(o, 'n')\n"
+        self.assertIsNone(c._reach("sqlglot/x.py", "A", "n", results, {"sqlglot/x.py": new}))
+        new = old + "\ndef q(o):\n    return o.n\n"
+        self.assertIsNone(c._reach("sqlglot/x.py", "A", "n", results, {"sqlglot/x.py": new}))
+        results["sqlglot/x.py"]["changed"] = [("sqlglot/x.py", "q", 4)]
+        self.assertIsNotNone(c._reach("sqlglot/x.py", "A", "n", results, {"sqlglot/x.py": new}))
+
 
 if __name__ == "__main__":
     unittest.main()

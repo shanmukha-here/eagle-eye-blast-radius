@@ -458,3 +458,136 @@ def line_ranges(tree, nodes, key, lines, inserts):
         # Control can reach an insertion point without running the statements around it.
         return None
     return ranges
+
+
+# Calls that look an attribute up by a name given as data, and the position of the name.
+NAME_CALLS = {"getattr": 1, "hasattr": 1, "setattr": 1, "delattr": 1, "getattr_static": 1,
+              "attrgetter": None, "methodcaller": 0, "__getattribute__": -1, "__getattr__": -1,
+              "__setattr__": -1, "__delattr__": -1, "patch": 0, "object": 1, "multiple": None}
+# Calls that list or search an object's members, or run code given as text.
+ENUMERATE_CALLS = {"dir", "vars", "getmembers", "getmembers_static", "classify_class_attrs",
+                   "DocTestSuite", "DocTestFinder", "testmod", "run_docstring_examples",
+                   "__subclasses__", "mro", "getmro", "eval", "exec", "compile", "help",
+                   "create_autospec", "Mock", "MagicMock", "NonCallableMock",
+                   "NonCallableMagicMock", "AsyncMock", "PropertyMock"}
+LOOKUP_NAMES = set(NAME_CALLS) | ENUMERATE_CALLS
+
+
+def _words(node):
+    out = set()
+    for c in ast.walk(node):
+        if isinstance(c, ast.Constant) and isinstance(c.value, str):
+            out.update(p for p in c.value.replace(".", " ").split() if p.isidentifier())
+        elif isinstance(c, ast.keyword) and c.arg:
+            out.add(c.arg)
+    return out
+
+
+def _suffix(node):
+    """The constant tail of a name built as f"...x" or ... + "x", or ""."""
+    if isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[-1], ast.Constant):
+        return node.values[-1].value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add) \
+            and isinstance(node.right, ast.Constant) and isinstance(node.right.value, str):
+        return node.right.value
+    return ""
+
+
+def lookup_sites(tree):
+    """(node, constant words or None, name suffix) for every name lookup by data in a tree.
+
+    Words are given when every looked-up name is a constant; otherwise the site is
+    dynamic and can reach any name that ends with the suffix."""
+    parents, bound = {}, set()
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bound.add(node.name)
+        elif isinstance(node, ast.arg):
+            bound.add(node.arg)
+        elif isinstance(node, ast.alias):
+            bound.add(node.asname or node.name.split(".")[0])
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and "{" in node.value:
+            # str.format fields such as "{0.name}" look attributes up.
+            fields = [part.split("}", 1)[0] for part in node.value.split("{")[1:]]
+            words = set()
+            for field in fields:
+                if "." in field or "[" in field:
+                    words.update(p for p in field.replace(".", " ").replace("[", " ")
+                                 .replace("]", " ").replace("!", " ").replace(":", " ").split()
+                                 if p.isidentifier())
+            if words:
+                yield node, words, ""
+        elif isinstance(node, ast.Attribute) and node.attr == "__dict__":
+            parent = parents.get(node)
+            if isinstance(parent, ast.Attribute) and parent.attr == "get" \
+                    and isinstance(parents.get(parent), ast.Call) and parents[parent].args \
+                    and isinstance(parents[parent].args[0], ast.Constant) \
+                    and isinstance(parents[parent].args[0].value, str):
+                yield node, {parents[parent].args[0].value}, ""
+            elif isinstance(parent, ast.Subscript) and parent.value is node \
+                    and isinstance(parent.slice, ast.Constant) and isinstance(parent.slice.value, str):
+                yield node, {parent.slice.value}, ""
+            elif isinstance(parent, ast.Compare) and len(parent.ops) == 1 \
+                    and isinstance(parent.ops[0], (ast.In, ast.NotIn)) and parent.comparators[0] is node \
+                    and isinstance(parent.left, ast.Constant) and isinstance(parent.left.value, str):
+                yield node, {parent.left.value}, ""
+            else:
+                yield node, None, ""
+        elif isinstance(node, (ast.Name, ast.Attribute)):
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            if name not in LOOKUP_NAMES:
+                continue
+            parent = parents.get(node)
+            if not (isinstance(parent, ast.Call) and parent.func is node):
+                # A lookup function passed around as a value.
+                if name in ("object", "patch", "multiple", "compile"):
+                    continue
+                if isinstance(node, ast.Name) and name in bound:
+                    continue  # a local variable of that name
+                yield node, None, ""
+                continue
+            call = parent
+            if name in ("object", "multiple") and not (
+                    isinstance(node, ast.Attribute) and (
+                        isinstance(node.value, ast.Name) and node.value.id == "patch"
+                        or isinstance(node.value, ast.Attribute) and node.value.attr == "patch")):
+                continue
+            if name in ("compile", "eval", "exec", "dir", "vars", "help") and not isinstance(node, ast.Name):
+                continue  # a method of that name, such as Context.eval
+            if name in ENUMERATE_CALLS:
+                if name in ("Mock", "MagicMock", "NonCallableMock", "NonCallableMagicMock",
+                            "AsyncMock", "PropertyMock") and not call.args and not any(
+                                k.arg in ("spec", "spec_set", None) for k in call.keywords):
+                    continue
+                yield call, None, ""
+                continue
+            if any(isinstance(a, ast.Starred) for a in call.args) or any(k.arg is None for k in call.keywords):
+                yield call, None, ""
+                continue
+            position = NAME_CALLS[name]
+            if name == "patch":
+                spec = [k for k in call.keywords if k.arg in ("autospec", "spec", "spec_set", "new_callable")]
+                if spec:
+                    yield call, None, ""
+                    continue
+            if position is None:
+                names = list(call.args[1:] if name == "multiple" else call.args)
+            elif position == -1:
+                names = call.args[-1:]
+            else:
+                names = call.args[position:position + 1]
+            if name == "multiple":
+                yield call, {k.arg for k in call.keywords}, ""
+                continue
+            if not names:
+                yield call, None, ""
+                continue
+            if all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in names):
+                yield call, _words(call), ""
+            else:
+                yield call, None, min((_suffix(a) for a in names), key=len)

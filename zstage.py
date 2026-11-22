@@ -52,6 +52,15 @@ class Candidates:
             self.classes = marshal.loads(lzma.decompress(Path(map_path).with_name("zclass.xz").read_bytes()))
         except (OSError, ValueError, EOFError, lzma.LZMAError):
             self.classes = None
+        self.sinks = None
+        try:
+            sinks = marshal.loads(lzma.decompress(Path(map_path).with_name("zsink.xz").read_bytes()))
+            if not sinks["unknown"]:
+                self.sinks = {"attrs": sinks["attrs"], "constants": set(sinks["constants"]),
+                              "dynamic": [(f, line, suffix, [tuple(k) for k in owners])
+                                          for f, line, suffix, owners in sinks["dynamic"]]}
+        except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
+            self.sinks = None
         self.fixtures = None
         try:
             self.fixtures = marshal.loads(lzma.decompress(Path(map_path).with_name("zfix.xz").read_bytes()))
@@ -138,26 +147,34 @@ class Candidates:
                 absent = True
         return entries, absent
 
-    def _members(self, path, result, patched):
-        """Keys whose starts cover every test an added or deleted method can affect, or None."""
+    def _members(self, path, result, patched, results=None, texts=None):
+        """(keys, mask) whose tests cover every test an added or deleted method can affect,
+        or None."""
         if self.classes is None:
             return None
-        keys = []
+        keys, extra = [], 0
         for scope, name, passthrough in result["added"]:
-            if name.startswith("__") or self._refs(name, 1, patched) or self._refs(name, 2, patched):
+            if name.startswith("__"):
                 return None
+            named = self._refs(name, 1, patched) or self._refs(name, 2, patched)
             if not scope:
                 # A new module function is unseen unless something names it.
-                if self._refs(name, 0, patched):
+                if named or self._refs(name, 0, patched):
                     return None
                 continue
             found = self._resolve(path, scope, name)
             if found is None:
                 return None
             entries, absent = found
-            if absent and (self._refs(name, 0, patched)
-                           or (name.endswith("_sql") and not name.startswith("_"))):
+            if absent and name.endswith("_sql") and not name.startswith("_"):
                 return None
+            if named or absent and self._refs(name, 0, patched):
+                # The name is used elsewhere: cover the tests that look it up.
+                reach = self._reach(path, scope, name, results, texts)
+                if reach is None:
+                    return None
+                keys.extend(reach[0])
+                extra |= reach[1]
             if passthrough and not absent and all(kind == "function" for kind, _ in entries):
                 # Calls reach the same inherited function with the same arguments.
                 continue
@@ -166,9 +183,88 @@ class Candidates:
             if (name.startswith("__") and not (scope and name in PROTOCOL_DUNDERS)) \
                     or self._refs(name, 1, patched) or self._refs(name, 2, patched) \
                     or self._refs(name, 3, patched):
-                return None
+                reach = None
+                if scope and not name.startswith("__"):
+                    reach = self._reach(path, scope, name, results, texts)
+                if reach is None:
+                    return None
+                keys.extend(reach[0])
+                extra |= reach[1]
             keys.append(tuple(key))
-        return keys
+        return keys, extra
+
+    def _reach(self, path, scope, name, results, texts):
+        """(code keys, mask) of the tests whose attribute lookups of ``name`` can see a method
+        of that name added to or deleted from class ``scope``, or None when unproven.
+
+        A lookup by a static name is an attribute instruction, and it only acts in a test
+        that ran its line. A lookup by data is a getattr-like call or a member listing: one
+        with a constant name declines here, and the others act where they ran. Lookups in
+        code that ran before the tests are returned as keys, which the caller declines or
+        sends to the value diff like any other import-time code."""
+        s = self.sinks
+        if s is None or results is None or name in s["constants"] or name in PROTOCOL_NAMES \
+                or name.startswith(PROTOCOL_PREFIXES) or (name.startswith("_") and name.endswith("_")):
+            return None
+        # Python and the standard library call other names on objects of classes with
+        # foreign bases (enums, exceptions, ABCs, containers).
+        data = self.classes
+        number = data["unique"].get((path, scope))
+        if number is None or number < 0:
+            return None
+        for _, mro, _ in data["classes"]:
+            if number in mro and any(isinstance(m, str) and m != "builtins.object" for m in mro):
+                return None
+        if self._new_lookups(name, results, texts):
+            return None
+        keys, mask = [], 0
+        sites = [((f, q, first), f, line) for f, q, first, line in s["attrs"].get(name, ())]
+        for f, line, suffix, owners in s["dynamic"]:
+            if suffix == "<module>" or suffix and not name.endswith(suffix):
+                continue
+            sites.extend((key, f, line) for key in owners)
+        for key, f, line in sites:
+            if key in self.preload:
+                keys.append(key)
+                continue
+            table = self.lines.get(f)
+            if table is not None and line in table:
+                mask |= table[line]
+            else:
+                mask |= self.masks.get(key, 0)
+        return keys, mask
+
+    def _new_lookups(self, name, results, texts):
+        """Whether a patched file's new text looks ``name`` up somewhere the pin did not."""
+        import ast
+        import dis
+        attrs = self.sinks["attrs"].get(name, ())
+        for other, new in (texts or {}).items():
+            try:
+                old_tree = ast.parse(results[other]["old_text"])
+                new_tree = ast.parse(new)
+                code = compile(new, other, "exec", dont_inherit=True)
+            except (SyntaxError, ValueError, KeyError, RecursionError, MemoryError):
+                return True
+            old_sites = {ast.dump(n) for n, words, _ in zpatch.lookup_sites(old_tree) if words is None}
+            for node, words, _ in zpatch.lookup_sites(new_tree):
+                if (name in words) if words is not None else ast.dump(node) not in old_sites:
+                    return True
+            pinned = {q for f, q, _, _ in attrs if f == other}
+            changed = {k[1] for k in results[other]["changed"]}
+            stack = [code]
+            while stack:
+                c = stack.pop()
+                stack.extend(k for k in c.co_consts if isinstance(k, types.CodeType))
+                if name not in c.co_names:
+                    continue
+                if not any(ins.opname in ATTR_OPS and ins.argval == name for ins in dis.get_instructions(c)):
+                    continue
+                q = c.co_qualname
+                if q in pinned or any(q == p or q.startswith(p + ".") for p in changed):
+                    continue
+                return True
+        return False
 
     def _input_only(self, path):
         """Tests that read only the inputs (meta and SQL) of this fixture's pairs."""
@@ -339,11 +435,14 @@ class Candidates:
                     member_keys.add(("c", path, scope, name) if scope else ("m", path, name))
                     if name.startswith("__"):
                         need_values = True
-                more = self._members(path, result, member_files)
+                more = self._members(path, result, member_files, results, texts)
                 if more is None:
                     self.stats.setdefault("decline", "72:if more is None:")
                     return None
+                more, extra = more
                 keys.extend(more)
+                mask |= extra
+                unswapped |= extra
                 for key in more:
                     unswapped |= self.masks.get(key, 0)
             for name, _, _ in result["defaults"]:
@@ -443,6 +542,16 @@ PROTOCOL_DUNDERS = {
     "__truediv__", "__and__", "__or__", "__xor__", "__invert__", "__neg__", "__pos__",
     "__enter__", "__exit__",
 }
+# Names that Python, the standard library or the test runner look up on objects passed to
+# them (mappings, files, generators, test cases), and prefixes of dispatch by name.
+PROTOCOL_NAMES = {
+    "keys", "read", "readline", "readlines", "readinto", "peek", "write", "writelines", "flush",
+    "close", "fileno", "seek", "tell", "isatty", "send", "throw", "asend", "athrow", "aclose",
+    "mro", "setUp", "tearDown", "setUpClass", "tearDownClass", "addCleanup", "run", "debug",
+    "id", "shortDescription", "countTestCases", "subTest", "default", "load_tests",
+}
+PROTOCOL_PREFIXES = ("test", "visit_", "do_", "handle_", "pytest_")
+ATTR_OPS = {"LOAD_ATTR", "STORE_ATTR", "DELETE_ATTR", "LOAD_SUPER_ATTR"}
 WALL0 = time.monotonic()
 LONG_MS = 3000
 # Stages that run tests in the zygote. Short-test refinement cost more CPU than the simulated
