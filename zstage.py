@@ -181,6 +181,9 @@ class Candidates:
         import subprocess
         import sys
         v = self.values
+        if v is None:
+            self.stats["values_decline"] = "map"
+            return None
         if v["codes"] is None:
             try:
                 data = marshal.loads(lzma.decompress(Path(v["map"]).read_bytes()))

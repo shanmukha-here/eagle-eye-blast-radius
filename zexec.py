@@ -108,6 +108,7 @@ class Zygote:
         """Run one test with its SQL fixture loaders yielding only ``wanted`` ({file: [index]})
         items; files not listed yield every item. Return True if it passed, False if it
         failed, None when unknown."""
+        self.last_cpu = 0.0
         if not self.start():
             return None
         try:
