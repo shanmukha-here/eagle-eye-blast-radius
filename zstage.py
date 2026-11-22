@@ -161,13 +161,14 @@ class Candidates:
                 continue
             keys.extend(key for _, key in entries)
         for scope, name, key in result["removed"]:
-            if name.startswith("__") or self._refs(name, 1, patched) or self._refs(name, 2, patched) \
+            if (name.startswith("__") and not (scope and name in PROTOCOL_DUNDERS)) \
+                    or self._refs(name, 1, patched) or self._refs(name, 2, patched) \
                     or self._refs(name, 3, patched):
                 return None
             keys.append(tuple(key))
         return keys
 
-    def _value_mask(self, files):
+    def _value_mask(self, files, members=()):
         """(mask, code keys) covering every test that can see a module or class value change
         after importing ``files`` ({path: new text}) in place of the pin, or None."""
         import subprocess
@@ -201,6 +202,9 @@ class Candidates:
             return None
         changed, added, removed = result
         self.stats["values_changed"] = len(changed)
+        # The patch's own added and deleted functions are bounded by the member rules.
+        added = [k for k in map(tuple, added) if k not in members]
+        removed = [k for k in map(tuple, removed) if k not in members]
         if added or removed:
             self.stats["values_decline"] = "added"
             return None
@@ -282,6 +286,7 @@ class Candidates:
             results[path] = result
             texts[path] = new
         need_values = any(r["values"] for r in results.values())
+        member_keys = set()
         for path, result in results.items():
             hunks = files[path]
             old = result["old_text"]
@@ -307,6 +312,12 @@ class Candidates:
             if result["added"] or result["removed"]:
                 # The zygote cannot add or delete methods, so these commits are not executed.
                 executable = False
+                for scope, name, _ in result["added"]:
+                    member_keys.add(("c", path, scope, name) if scope else ("m", path, name))
+                for scope, name, _ in result["removed"]:
+                    member_keys.add(("c", path, scope, name) if scope else ("m", path, name))
+                    if name.startswith("__"):
+                        need_values = True
                 more = self._members(path, result, member_files)
                 if more is None:
                     self.stats.setdefault("decline", "72:if more is None:")
@@ -341,7 +352,7 @@ class Candidates:
             self.stats.setdefault("decline", "value_gain")
             return None
         if need_values:
-            found = self._value_mask(texts)
+            found = self._value_mask(texts, member_keys)
             if found is None:
                 self.stats.setdefault("decline", "98:if found is None:")
                 return None
@@ -378,6 +389,16 @@ def swap_text(text):
 
 
 VALUE_MIN_GAIN = 1.5
+# Dunders that Python only looks up to call. Deleting one changes only the calls that started
+# it; the value diff checks the class dict for side effects such as an implicit __hash__.
+PROTOCOL_DUNDERS = {
+    "__repr__", "__str__", "__format__", "__hash__", "__eq__", "__ne__", "__lt__", "__le__",
+    "__gt__", "__ge__", "__bool__", "__len__", "__iter__", "__next__", "__reversed__",
+    "__contains__", "__getitem__", "__setitem__", "__delitem__", "__call__", "__copy__",
+    "__deepcopy__", "__add__", "__radd__", "__sub__", "__rsub__", "__mul__", "__rmul__",
+    "__truediv__", "__and__", "__or__", "__xor__", "__invert__", "__neg__", "__pos__",
+    "__enter__", "__exit__",
+}
 WALL0 = time.monotonic()
 LONG_MS = 3000
 # Stages that run tests in the zygote. Short-test refinement cost more CPU than the simulated

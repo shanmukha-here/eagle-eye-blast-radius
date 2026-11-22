@@ -182,6 +182,12 @@ def names(text, tree=None):
         tree = ast.parse(text)
     ids, strings, compared, loads = set(), set(), set(), set()
     called = set()
+    # Docstrings are never looked up as attribute names.
+    docs = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and _doc_index(node.body) == 0:
+            docs.add(id(node.body[0].value))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             called.add(id(node.func))
@@ -208,7 +214,7 @@ def names(text, tree=None):
             ids.add(node.arg)
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
             ids.update(node.names)
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs:
             for part in node.value.replace(".", " ").split():
                 if part.isidentifier():
                     strings.add(part)

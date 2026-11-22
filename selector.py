@@ -520,7 +520,11 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             rest = {n for n in selected if m >> n & 1}
             return (scheduler.cost(plan) - (scheduler.cost(scheduler.repack(rest, plan)) if rest else 0)) / 1000
 
+        t_swap = seconds()
         found = swap.analyze(raw, gain)
+        if report:
+            stats["swap_cpu"] = round(seconds() - t_swap, 3)
+            stats.update({"swap_" + k: v for k, v in swap.stats.items()})
         if found is None:
             continue
         mask = found[0]
