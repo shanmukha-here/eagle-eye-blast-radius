@@ -162,6 +162,8 @@ class Candidates:
         executable = True
         member_files = {}
         ranges_out = {}
+        # Tests that fixture or member edits may reach; the zygote applies neither.
+        unswapped = 0
         for path, hunks in files.items():
             if path.startswith("tests/fixtures/") and not path.endswith(".py"):
                 # A data file reaches only the tests that open it while they run.
@@ -172,6 +174,7 @@ class Candidates:
                 except (OSError, UnicodeError, UnknownChange, ValueError):
                     return None
                 mask |= self.fixtures["opens"].get(path, 0)
+                unswapped |= self.fixtures["opens"].get(path, 0)
                 executable = False
                 continue
             if not (path.startswith("sqlglot/") and path.endswith(".py")):
@@ -215,6 +218,8 @@ class Candidates:
                 if more is None:
                     return None
                 keys.extend(more)
+                for key in more:
+                    unswapped |= self.masks.get(key, 0)
             for name, _, _ in result["defaults"]:
                 found = self.by_name.get((path, name))
                 if not found:
@@ -230,7 +235,21 @@ class Candidates:
                     mask |= self.masks.get(key, 0)
                 changed.add(key)
             mask |= self.opens.get(path, 0)
-        return mask, results, changed, executable, ranges_out
+        return mask, results, changed, executable, ranges_out, unswapped
+
+
+def swap_text(text):
+    """The sections of a unified diff that edit sqlglot/*.py files."""
+    parts = text.split("\ndiff --git ")
+    keep = []
+    for k, part in enumerate(parts):
+        section = part if k == 0 else "diff --git " + part
+        header = section.split("\n", 1)[0]
+        bits = header.split(" ")
+        if len(bits) == 4 and bits[2].startswith("a/sqlglot/") and bits[2].endswith(".py"):
+            keep.append(section)
+    out = "\n".join(keep)
+    return out if out.endswith("\n") or not out else out + "\n"
 
 
 WALL0 = time.monotonic()
@@ -277,7 +296,7 @@ class Execute:
         except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
             self.tpc = None
 
-    def replay_long(self, raw, plan, mask, changed, ranges=None):
+    def replay_long(self, raw, plan, mask, changed, ranges=None, unswapped=0):
         """Drop a TPC executor test when every query that starts changed code digests the same."""
         if not (REPLAY_LONG or REPLAY_PLANS) or self.tpc is None or not plan \
                 or time.monotonic() > self.deadline - 10:
@@ -285,7 +304,7 @@ class Execute:
         s = self.scheduler
         selected = {n for group in plan for n in group}
         for number, (name, units, covered, lines, split) in self.tpc_units.items():
-            if number not in selected or changed & self.tpc_setup:
+            if number not in selected or changed & self.tpc_setup or unswapped >> number & 1:
                 continue
             bit = 1 << number
             inside = {k for k in changed if self.swap.masks.get(k, 0) & bit}

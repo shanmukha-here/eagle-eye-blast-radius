@@ -38,7 +38,7 @@ from registry_guard import changes_routing
 from precision import Precision
 from recovery import Recovery
 from risk_policy import RiskPolicy
-from zstage import Candidates, Execute
+from zstage import Candidates, Execute, swap_text
 from impact import Impact, UnknownChange, bypasses_executor_result, patched, split_diff, syntax
 from refine import Details
 
@@ -526,18 +526,22 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             plan = scheduler.repack(keep, plan) if keep else []
             planned[i] = path, text, plan, nearby, passed, attempted, stats
         if found[3]:
-            swapped[i] = raw, mask, found[2], found[4]
+            swapped[i] = raw, mask, found[2], found[4], 0
+        elif found[5] != found[0] and swap_text(raw):
+            # Fixture or member edits: replay only tests they cannot reach, on the code part.
+            swapped[i] = swap_text(raw), mask, found[2], found[4], found[5]
     executor = Execute(swap, scheduler, base, [t["id"] for t in tests], len(patches))
     order = sorted(swapped, key=lambda i: -scheduler.cost(planned[i][2]))
     try:
         for i in order:
-            raw, mask, changed, ranges = swapped[i]
+            raw, mask, changed, ranges, unswapped = swapped[i]
             path, text, plan, nearby, passed, attempted, stats = planned[i]
             begin = seconds()
             executor.stats = {}
-            plan = executor.replay_long(raw, plan, mask, changed, ranges)
+            plan = executor.replay_long(raw, plan, mask, changed, ranges, unswapped)
             long_stats = executor.stats
-            plan = executor.refine(raw, plan, mask)
+            if not unswapped:
+                plan = executor.refine(raw, plan, mask)
             executor.stats.update(long_stats)
             if report:
                 stats.update(executor.stats)
