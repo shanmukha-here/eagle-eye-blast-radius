@@ -71,20 +71,20 @@ class Tables:
             setup(te.DIR_TPCDS, table, columns, self.tpcds_tables)
 
 
-def _canon(value, steps):
+def _canon(value, sig):
     from sqlglot import exp
     from sqlglot.planner import Step
 
     if isinstance(value, Step):
-        return ("S", steps[id(value)])
+        return ("S", sig(value))
     if isinstance(value, exp.Expr):
         return ("E", pickle.dumps(value))
     if isinstance(value, (set, frozenset)):
-        return ("set", sorted((_canon(v, steps) for v in value), key=repr))
+        return ("set", sorted((_canon(v, sig) for v in value), key=repr))
     if isinstance(value, dict):
-        return ("dict", [(_canon(k, steps), _canon(v, steps)) for k, v in value.items()])
+        return ("dict", [(_canon(k, sig), _canon(v, sig)) for k, v in value.items()])
     if isinstance(value, (list, tuple)):
-        return (type(value).__name__, [_canon(v, steps) for v in value])
+        return (type(value).__name__, [_canon(v, sig) for v in value])
     if isinstance(value, type):
         return ("T", value.__module__, value.__qualname__)
     if value is None or isinstance(value, (bool, int, float, str, bytes)):
@@ -94,23 +94,23 @@ def _canon(value, steps):
 
 
 def plan_digest(plan):
-    """A digest of every field of every plan step, independent of set and address order."""
-    order = []
-    seen = {}
+    """A digest of every field of every plan step. Steps are named by a signature of their
+    own fields and dependencies, so set and address order do not enter. `dependents` is the
+    inverse of `dependencies` and is left out."""
+    memo = {}
 
-    def visit(step):
-        if id(step) in seen:
-            return
-        seen[id(step)] = len(order)
-        order.append(step)
-        for child in sorted(step.dependencies, key=lambda s: (type(s).__name__, str(s.name))):
-            visit(child)
+    def sig(step):
+        key = id(step)
+        if key not in memo:
+            memo[key] = None  # a cycle shows as None
+            fields = sorted((k, _canon(v, sig)) for k, v in vars(step).items()
+                            if k not in ("dependencies", "dependents"))
+            deps = sorted(sig(d) or b"" for d in step.dependencies)
+            memo[key] = hashlib.sha256(repr((type(step).__qualname__, fields, deps)).encode()).digest()
+        return memo[key]
 
-    visit(plan.root)
-    fields = [(type(s).__qualname__, sorted((k, _canon(v, seen)) for k, v in vars(s).items()))
-              for s in order]
-    top = sorted((k, _canon(v, seen)) for k, v in vars(plan).items() if k != "_dag")
-    return hashlib.sha256(repr((fields, top)).encode()).digest()
+    top = sorted((k, _canon(v, sig)) for k, v in vars(plan).items() if k != "_dag")
+    return hashlib.sha256(repr((sig(plan.root), top)).encode()).digest()
 
 
 def split_query(state, name, i, rows=True, phase=None):
