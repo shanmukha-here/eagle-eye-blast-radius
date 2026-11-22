@@ -37,6 +37,7 @@ class Candidates:
         self.opens = data["opens"]
         # Tests whose own trace is unusable stay in the incoming selection.
         self.opaque = data["failed"] | data["missing"]
+        self.spawn = data["spawn"]
         self.blocked = self.opaque | data["spawn"]
         for mask in data["opens"].values():
             self.blocked |= mask
@@ -445,6 +446,11 @@ EMPTY_ONLY = True
 # Replay TPC queries up to row execution only, when no affected query runs changed code there.
 REPLAY_PLANS = True
 PLAN_CPU = 0.35
+# Run a fixture-driven test on only the fixture cases that started changed code (zcase.xz).
+REPLAY_CASES = True
+# A replay costs about the recorded seconds of the part it runs, plus the fork.
+CASE_CPU = 1.0
+CASE_FORK = 0.05
 
 
 class Execute:
@@ -479,6 +485,110 @@ class Execute:
                 self.tpc_units[number] = (name, coded, covered, data.get("lines", {}).get(name), split)
         except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
             self.tpc = None
+        self.case_map = None
+        try:
+            data = marshal.loads(lzma.decompress(Path(swap.base_map).with_name("zcase.xz").read_bytes()))
+            if data["ids"] == swap.ids:
+                data["index"] = {tuple(k): i for i, k in enumerate(data["keys"])}
+                self.case_map = data
+        except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
+            self.case_map = None
+
+    def _affected_cases(self, number, record, changed, ranges):
+        """Bit mask of the record's cases that started changed code (or ran an edited line),
+        or None when some change ran outside the cases, depends on case order, or the two
+        traces disagree."""
+        index = self.case_map["index"]
+        bad_codes = record.setdefault("bad_code_set", set(record["bad_codes"]))
+        bad_lines = record.setdefault("bad_line_set", set(map(tuple, record["bad_lines"])))
+        bit = 1 << number
+        affected = 0
+        for key in changed:
+            if not self.swap.masks.get(key, 0) & bit:
+                continue
+            i = index.get(key)
+            if ranges and key in ranges and key[0] in self.swap.lines:
+                table = self.swap.lines[key[0]]
+                hit = False
+                for path, a, b in ranges[key]:
+                    for line in range(a, b + 1):
+                        if not table.get(line, 0) & bit:
+                            continue
+                        hit = True
+                        if i is None or (i, line) in bad_lines:
+                            return None
+                        found = record["lines"].get((i, line))
+                        if found is None:
+                            return None
+                        affected |= found
+                if hit:
+                    continue
+                # No edited line ran in this test on the pin: the line rule leaves it out.
+                continue
+            if i is None or i in bad_codes:
+                return None
+            found = record["codes"].get(i)
+            if found is None:
+                return None
+            affected |= found
+        return affected
+
+    def replay_cases(self, raw, plan, mask, changed, ranges=None, unswapped=0):
+        """Drop a fixture test whose affected cases pass when run alone on the patched code."""
+        if not REPLAY_CASES or self.case_map is None or self.zygote is None or not plan \
+                or time.monotonic() > self.deadline - 10:
+            return plan
+        s = self.scheduler
+        selected = {n for group in plan for n in group}
+        tests = self.case_map["tests"]
+        # The zygote serves patched sources to imports, not to open(); subprocesses import
+        # the pin.
+        skip = self.swap.opaque | self.swap.spawn | unswapped
+        for line in raw.splitlines():
+            if line.startswith("diff --git a/"):
+                skip |= self.swap.opens.get(line[len("diff --git a/"):].split(" b/")[0], 0)
+        options = []
+        for n in selected:
+            record = tests.get(n)
+            if record is None or skip >> n & 1:
+                continue
+            affected = self._affected_cases(n, record, changed, ranges)
+            if not affected:
+                continue
+            cases = record["cases"]
+            files = {cases[j][0] for j in range(len(cases)) if affected >> j & 1}
+            # Files without affected cases yield every item, as on the pin.
+            run = sum(cpu for j, cpu in enumerate(record["cpu"])
+                      if affected >> j & 1 or cases[j][0] not in files)
+            total = sum(record["cpu"]) + record["outside_cpu"]
+            share = (run + record["outside_cpu"]) / total if total > 0 else 1.0
+            estimate = CASE_FORK + CASE_CPU * share * s.durations[n] / 1000
+            wanted = {}
+            for j in range(len(cases)):
+                if affected >> j & 1:
+                    wanted.setdefault(cases[j][0], []).append(cases[j][1])
+            options.append((n, estimate, wanted))
+        if not options:
+            return plan
+        options.sort(key=lambda o: -s.durations[o[0]])
+        for n, estimate, wanted in options:
+            if n not in selected or time.monotonic() > self.deadline - 5:
+                continue
+            rest = selected - {n}
+            after = s.repack(rest, plan) if rest else []
+            upside = (s.cost(plan) - s.cost(after)) / 1000
+            if estimate > 0.6 * upside or estimate > self.remaining:
+                continue
+            wall = min(self.deadline - time.monotonic(), 2.0 + 4.0 * estimate)
+            passed = self.zygote.cases(raw, n, wanted, 2.0 + 4.0 * estimate, 2.0 * estimate + 0.5, wall)
+            self.remaining -= max(estimate, self.zygote.last_cpu)
+            self.stats["case_runs"] = self.stats.get("case_runs", 0) + 1
+            self.stats["case_cpu"] = round(self.stats.get("case_cpu", 0.0) + self.zygote.last_cpu, 3)
+            if passed:
+                self.stats["case_dropped"] = self.stats.get("case_dropped", 0) + 1
+                selected = rest
+                plan = after
+        return plan
 
     def replay_long(self, raw, plan, mask, changed, ranges=None, unswapped=0):
         """Drop a TPC executor test when every query that starts changed code digests the same."""

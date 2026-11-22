@@ -548,6 +548,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             begin = seconds()
             executor.stats = {}
             plan = executor.replay_long(raw, plan, mask, changed, ranges, unswapped)
+            plan = executor.replay_cases(raw, plan, mask, changed, ranges, unswapped)
             long_stats = executor.stats
             if not unswapped:
                 plan = executor.refine(raw, plan, mask)

@@ -104,6 +104,29 @@ class Zygote:
         number = {self.ids[n]: n for n in tests}
         return {number[t] for t in failed}, {number[t] for t in done}
 
+    def cases(self, patch, test, wanted, limit, budget, wall):
+        """Run one test with its SQL fixture loaders yielding only ``wanted`` ({file: [index]})
+        items; files not listed yield every item. Return True if it passed, False if it
+        failed, None when unknown."""
+        if not self.start():
+            return None
+        try:
+            _send(self.process.stdin, ("cases", patch, [self.ids[test]], [float(limit)],
+                                       float(budget), float(wall), wanted))
+            reply = self._wait(wall + 5.0)
+        except (OSError, EOFError, ValueError):
+            self.close()
+            self.failed = True
+            return None
+        if reply is None:
+            return None
+        failed, done, cpu = reply
+        self.cpu += cpu
+        self.last_cpu = cpu
+        if self.ids[test] not in done:
+            return None
+        return self.ids[test] not in failed
+
     def tpc(self, patch, queries, budget, wall, expected=(), rows=True):
         """Digests of the given (name, index) TPC queries on the patched code, or None. The
         replay stops after the first digest that differs from ``expected``."""
@@ -141,6 +164,34 @@ class Zygote:
 
 
 # ---------------------------------------------------------------- server side
+
+FIXTURE_LOADERS = ("load_sql_fixture_pairs", "load_sql_fixtures")
+
+
+def _filter_fixtures(base, wanted):
+    """Make the SQL fixture loaders of tests/helpers.py, wherever test modules bound them,
+    yield only the wanted items of the listed files (in the forked child only)."""
+    helpers = os.path.join(base, "tests", "helpers.py")
+    keep = {name: set(indexes) for name, indexes in wanted.items()}
+
+    def wrap(orig):
+        def loader(filename, *args, **kwargs):
+            chosen = keep.get(filename)
+            for i, item in enumerate(orig(filename, *args, **kwargs)):
+                if chosen is None or i in chosen:
+                    yield item
+        return loader
+
+    wrapped = {}
+    for module in list(sys.modules.values()):
+        for name, value in list(getattr(module, "__dict__", {}).items()):
+            if isinstance(value, types.FunctionType) and value.__name__ in FIXTURE_LOADERS \
+                    and value.__code__.co_filename == helpers:
+                if value not in wrapped:
+                    wrapped[value] = wrap(value)
+                setattr(module, name, wrapped[value])
+    if not wrapped:
+        raise RuntimeError("no fixture loaders")
 
 
 class _Source(importlib.abc.MetaPathFinder, importlib.abc.Loader):
@@ -305,8 +356,9 @@ def serve():
             if tpc_state is False:
                 _send(stdout, None)
                 continue
-        patch, tests, limits, budget, wall = job
-        if kind == "tests":
+        patch, tests, limits, budget, wall = job[:5]
+        wanted = job[5] if kind == "cases" else None
+        if kind in ("tests", "cases"):
             try:
                 ensure(tests)
             except Exception:
@@ -344,6 +396,8 @@ def serve():
                             break
                     payload = marshal.dumps((digests, time.process_time() + used))
                 else:
+                    if wanted is not None:
+                        _filter_fixtures(base, wanted)
                     runnable = [t for t in tests if t in found]
                     failed, done = runner.run(runnable, dict(zip(tests, limits)), stop_after=budget,
                                               first_failure=first_failure)
