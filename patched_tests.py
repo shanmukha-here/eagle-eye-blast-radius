@@ -258,3 +258,75 @@ class PatchedTests:
             if "patched_passed" not in self.stats:
                 self.stats["patched_incomplete"] = True
         return plan
+
+
+def lane(conn, engine):
+    """Run execution jobs alongside discovery on a second scorer core."""
+    try:
+        while True:
+            message = conn.recv()
+            if message is None:
+                break
+            text, plan, long_tests, passed, attempted = message
+            plan = engine.refine(text, plan, long_tests, passed, attempted)
+            conn.send((plan, passed, engine.stats))
+    except (EOFError, OSError):
+        pass
+    finally:
+        engine.warm.close()
+        conn.close()
+
+
+class ExecutionLane:
+    def __init__(self, engine, long_tests):
+        self.engine = engine
+        self.long_tests = set(long_tests)
+        self.process = self.conn = None
+        self.started = 0.0
+        self.available = engine.available
+
+    def submit(self, text, plan, passed, attempted):
+        if not self.available or not text or not plan or time.monotonic() >= self.engine.deadline:
+            return False
+        if self.process is None:
+            self.conn, child_conn = self.engine.context.Pipe()
+            self.process = self.engine.context.Process(target=lane, args=(child_conn, self.engine))
+            try:
+                self.process.start()
+            except OSError:
+                self.available = False
+                self.process = None
+                self.conn.close()
+                self.conn = None
+                return False
+            finally:
+                child_conn.close()
+        try:
+            self.started = time.monotonic()
+            self.conn.send((text, plan, self.long_tests, passed, attempted))
+            return True
+        except OSError:
+            self.available = False
+            return False
+
+    def finish(self, plan, passed):
+        if self.available:
+            try:
+                deadline = min(self.engine.deadline, self.started + 12.0)
+                if self.conn.poll(max(0.0, deadline - time.monotonic())):
+                    return self.conn.recv()
+            except (EOFError, OSError):
+                pass
+        self.available = False
+        return plan, passed, {"patched_lane_incomplete": True}
+
+    def close(self):
+        if self.conn is not None:
+            with suppress(OSError):
+                self.conn.send(None)
+            self.conn.close()
+        if self.process is not None:
+            self.process.join(0.20)
+            if self.process.is_alive():
+                self.process.kill()
+                self.process.join()

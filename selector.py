@@ -20,7 +20,7 @@ from decision import Execution, PatchWorkspace
 from flow import Flow
 from observed import Observers
 from exact_tests import ExactTests
-from patched_tests import PatchedTests
+from patched_tests import ExecutionLane, PatchedTests
 from optimizer_probe import Replay
 from miniatures import CORE, Miniatures
 from startup import Startup
@@ -273,7 +273,33 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         coverage = recovered[0]
         return not mask & scheduler.known & ~coverage and bool(coverage & short_bits & ~mask)
 
+    pending = None
+
+    def finish():
+        nonlocal pending
+        if pending is None:
+            return
+        path, plan, nearby, passed, stats, launched = pending
+        pending = None
+        if launched:
+            plan, passed, measured = lane.finish(plan, passed)
+            if report:
+                stats.update(measured)
+        if nearby is not None:
+            insured = scheduler.insure(plan, nearby, passed)
+            if report and insured is not plan:
+                stats["insurance_tests"] = sum(map(len, insured)) - sum(map(len, plan))
+            plan = insured
+        if report:
+            stats["cpu"] += stats.get("patched_cpu", 0.0)
+            stats["startup"] = 2 * len(plan)
+            stats["busiest"] = (scheduler.cost(plan) - 2000 * len(plan)) / 1000
+            print(json.dumps(stats, separators=(",", ":")), file=sys.stderr)
+        workers = json.dumps(plan, separators=(",", ":"))
+        sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
+
     def emit(path, plan, beginning, text=None, verified=False):
+        nonlocal pending
         recovered = None if verified else recovery.declarations(text)
         skip_risk = False
         if recovered is not None:
@@ -327,29 +353,21 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
             if checked != plan:
                 precision.stats["small_clean_cohort"] = sum(map(len, plan))
                 plan = checked
-            plan = patched_tests.refine(text, plan, long_cases.tests.keys(), verify.passed, verify.attempted)
-            budget.execution_cpu += patched_tests.stats.get("patched_parent_cpu", 0.0)
-            if plan:
-                insured = scheduler.insure(plan, insurance_scope(text), verify.passed)
-                if insured is not plan:
-                    precision.stats["insurance_tests"] = sum(map(len, insured)) - sum(map(len, plan))
-                    plan = insured
-        else:
-            patched_tests.stats = {}
+        stats = {}
         if report:
-            metrics = dict(commit=path.stem, cpu=seconds() - beginning,
-                           startup=2 * len(plan),
-                           busiest=(scheduler.cost(plan) - 2000 * len(plan)) / 1000,
-                           **queries.stats, **precision.stats, **long_cases.stats, **risk.stats,
-                           **patched_tests.stats)
-            print(json.dumps(metrics, separators=(",", ":")), file=sys.stderr)
-        workers = json.dumps(plan, separators=(",", ":"))
-        sys.stdout.write('{"commit":' + json.dumps(path.stem) + ',"workers":' + workers + '}\n')
+            stats = dict(commit=path.stem, cpu=seconds() - beginning,
+                         **queries.stats, **precision.stats, **long_cases.stats, **risk.stats)
+        passed = verify.passed.copy() if text else set()
+        nearby = insurance_scope(text) if text and plan else None
+        finish()
+        launched = lane.submit(text, plan, passed, verify.attempted)
+        pending = path, plan, nearby, passed, stats, launched
     observation = ObservationIndex(impact, map_path.with_name("values.z"))
     surface = Surface(impact, map_path.parent, observation.references)
     references = ReferenceReplay(base, map_path.parent, scheduler, tests, len(patches))
     verify = ExactTests(scheduler, tests, base, len(patches), map_path.with_name("unit_ready.json"))
     patched_tests = PatchedTests(scheduler, verify, base, len(patches), precision)
+    lane = ExecutionLane(patched_tests, long_cases.tests)
     for check in (impact.details.replay,
                   incumbent.details.replay, impact.details.miniatures,
                   execution, gate, references, verify):
@@ -512,7 +530,8 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         except UnicodeError:
             plan = fallback_plan
         emit(path, plan, beginning, risk_text)
-    patched_tests.warm.close()
+    finish()
+    lane.close()
     if report and cold_file.is_file():
         print(json.dumps(dict(cold_import_checks_skipped=impact.details.cold_import.shortcuts)), file=sys.stderr)
 
