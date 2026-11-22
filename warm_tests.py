@@ -9,7 +9,7 @@ from pathlib import Path
 import signal
 import sys
 import time
-from types import CodeType, FunctionType
+from types import AsyncGeneratorType, CodeType, CoroutineType, FunctionType, GeneratorType
 
 from cpu_budget import seconds
 from exact_tests import run_unittests
@@ -50,9 +50,19 @@ def load(base, modules):
 
     functions = defaultdict(list)
     for value in gc.get_objects():
-        if isinstance(value, FunctionType) and value.__code__.co_filename.startswith(prefix + "sqlglot/"):
+        if isinstance(value, FunctionType):
             code = value.__code__
-            functions[code.co_filename.removeprefix(prefix), code.co_qualname].append(value)
+            if code.co_filename.startswith(prefix + "sqlglot/"):
+                functions[code.co_filename.removeprefix(prefix), code.co_qualname].append(value)
+        elif isinstance(value, (GeneratorType, CoroutineType, AsyncGeneratorType)):
+            if isinstance(value, GeneratorType):
+                code = value.gi_code
+            elif isinstance(value, CoroutineType):
+                code = value.cr_code
+            else:
+                code = value.ag_code
+            if code.co_filename.startswith(prefix + "sqlglot/"):
+                called.add((code.co_filename.removeprefix(prefix), code.co_qualname))
     return called, functions
 
 

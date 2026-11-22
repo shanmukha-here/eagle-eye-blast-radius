@@ -12,8 +12,7 @@ import time
 from cpu_budget import seconds
 from decision import PatchWorkspace
 from exact_tests import run_unittests
-from impact import UnknownChange, split_diff
-from precision_body import footprint
+from impact import UnknownChange, patched, split_diff, syntax
 from warm_tests import WarmTests
 
 
@@ -123,18 +122,29 @@ class PatchedTests:
         self.deadline = time.monotonic() + (125 if count <= 40 else 185)
         self.available = len(os.listdir("/proc/self/task")) == 1
         self.precision = precision
-        self.warm = WarmTests(self.base, profile.ready)
+        self.warm = WarmTests(self.base, profile.nodes.values())
         self.stats = {}
 
-    def warm_shapes(self, patch, candidates):
-        changes = footprint(self.precision.impact, patch)
-        if changes is None or not self.precision.short_certificate(patch):
+    def warm_shapes(self, edits, candidates):
+        if any(not path.startswith("sqlglot/") or not path.endswith(".py") for path in edits):
             return None
-        protected = self.precision.protected(changes)
+        protected = self.precision.protected(edits)
         if any(self.scheduler.bits[n] & protected for n in candidates):
             return None
-        return {path: tuple(".".join(site[:-1]) for site, _, _ in rows)
-                for path, rows in changes.items()}
+        changes = {}
+        try:
+            for path, hunks in edits.items():
+                source, (outer, original), _ = self.precision.impact.base(path)
+                _, (revised, after), _ = syntax(path, patched(source, hunks))
+                if outer != revised or original.keys() != after.keys():
+                    return None
+                names = tuple(".".join(site[:-1]) for site in original
+                              if original[site][2] != after[site][2])
+                if names:
+                    changes[path] = names
+        except (OSError, SyntaxError, UnknownChange, ValueError, RecursionError):
+            return None
+        return changes
 
     def estimate(self, candidates, warm=False):
         runtime = sum(max(self.scheduler.durations[n], 2) for n in candidates) / 1000
@@ -214,7 +224,7 @@ class PatchedTests:
                 overlay_cpu = seconds() - begin
                 if cap - overlay_cpu < 0.15:
                     return plan
-                changes = self.warm_shapes(patch, candidates) if bare else None
+                changes = self.warm_shapes(edits, candidates) if bare else None
                 if names in attempted and not changes:
                     return plan
                 if changes and not self.warm.disabled:
