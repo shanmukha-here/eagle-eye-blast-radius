@@ -41,6 +41,7 @@ for records in runs:
         if isinstance(r, dict):
             fork_codes.setdefault(t, set()).update(map(tuple, r["codes"]))
 sensitive = set()
+n_fork = len(runs)
 if len(sys.argv) > 5:
     for directory in sys.argv[5].split(","):
         records = {}
@@ -60,7 +61,7 @@ failed = 0
 missing = 0
 opens = {}
 cpu = [0.0] * len(ids)
-for test_id, rec in ((t, r) for records in runs for t, r in records.items()):
+for run_index, test_id, rec in ((j, t, r) for j, records in enumerate(runs) for t, r in records.items()):
     n = number[test_id]
     bit = 1 << n
     if not isinstance(rec, dict):
@@ -71,7 +72,7 @@ for test_id, rec in ((t, r) for records in runs for t, r in records.items()):
     if rec["failed"]:
         failed |= bit
     cpu[n] = max(cpu[n], rec["cpu"] + rec["child_cpu"])
-    for path in rec["opens"]:
+    for path in (rec["opens"] if run_index < n_fork else ()):
         if path.endswith(".py"):
             opens[path] = opens.get(path, 0) | bit
     for k in rec["codes"]:

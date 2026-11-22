@@ -55,9 +55,20 @@ def on_line(code, line):
     return mon.DISABLE
 
 
+def _importing():
+    frame = sys._getframe(2)
+    while frame is not None:
+        if frame.f_code.co_filename.startswith("<frozen importlib"):
+            return True
+        frame = frame.f_back
+    return False
+
+
 def audit(event, args):
     if event == "open":
         path = args[0]
+        if _importing():
+            return
         if isinstance(path, str):
             path = os.path.abspath(path)
             if path.startswith(PREFIX):

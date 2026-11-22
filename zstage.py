@@ -27,6 +27,7 @@ class Candidates:
         if data["ids"] != list(ids):
             return
         self.ids = data["ids"]
+        self.base_map = map_path
         self.masks = dict(zip(map(tuple, data["keys"]), data["masks"]))
         self.preload = set(map(tuple, data["preload"]))
         # Code that runs differently after earlier tests changed shared state.
@@ -58,6 +59,7 @@ class Candidates:
             return None
         mask = self.opaque
         results = {}
+        changed = set()
         for path, hunks in files.items():
             if not (path.startswith("sqlglot/") and path.endswith(".py")):
                 return None
@@ -79,9 +81,10 @@ class Candidates:
                 if key in self.preload:
                     return None
                 mask |= self.masks.get(key, 0)
+                changed.add(key)
             mask |= self.opens.get(path, 0)
             results[path] = result
-        return mask, results
+        return mask, results, changed
 
 
 WALL0 = time.monotonic()
@@ -103,6 +106,58 @@ class Execute:
             self.zygote = Zygote(base, ids, self.deadline)
         self.cpu = swap.cpu
         self.stats = {}
+        self.tpc = None
+        try:
+            data = marshal.loads(lzma.decompress(Path(swap.base_map).with_name("ztpc.xz").read_bytes()))
+            self.tpc = data
+            self.tpc_setup = set(map(tuple, data["setup"]))
+            self.tpc_units = {}
+            for name, (number, units) in data["tests"].items():
+                if swap.ids[number] != data.get("ids", {}).get(name, swap.ids[number]):
+                    continue
+                coded = [(set(map(tuple, c)), d, t) for c, d, t in units]
+                covered = set().union(*(c for c, _, _ in coded))
+                self.tpc_units[number] = (name, coded, covered)
+        except (OSError, ValueError, EOFError, KeyError, TypeError, lzma.LZMAError):
+            self.tpc = None
+
+    def replay_long(self, raw, plan, mask, changed):
+        """Drop a TPC executor test when every query that starts changed code digests the same."""
+        if self.tpc is None or not plan or time.monotonic() > self.deadline - 10:
+            return plan
+        s = self.scheduler
+        selected = {n for group in plan for n in group}
+        for number, (name, units, covered) in self.tpc_units.items():
+            if number not in selected or changed & self.tpc_setup:
+                continue
+            bit = 1 << number
+            inside = {k for k in changed if self.swap.masks.get(k, 0) & bit}
+            if inside - covered:
+                self.stats[name + "_outside"] = True
+                continue
+            affected = [i for i, (c, _, _) in enumerate(units) if c & changed]
+            if not affected or any(units[i][1] is None for i in affected):
+                continue
+            estimate = 0.1 + sum(units[i][2] for i in affected)
+            rest = selected - {number}
+            after = s.repack(rest, plan) if rest else []
+            upside = (s.cost(plan) - s.cost(after)) / 1000
+            self.stats[name + "_queries"] = len(affected)
+            self.stats[name + "_estimate"] = round(estimate, 3)
+            if estimate > 0.7 * upside or estimate > self.remaining:
+                continue
+            wall = min(self.deadline - time.monotonic(), 10.0 + 3.0 * estimate)
+            digests = self.zygote.tpc(raw, [(name, i) for i in affected], 2.0 * estimate + 1.0, wall)
+            self.remaining -= estimate
+            if digests is None or len(digests) != len(affected):
+                self.stats[name + "_replay"] = "incomplete"
+                continue
+            same = all(d == units[i][1] for d, i in zip(digests, affected))
+            self.stats[name + "_replay"] = "same" if same else "changed"
+            if same:
+                selected = rest
+                plan = after
+        return plan
 
     def refine(self, raw, plan, mask):
         self.stats = {}

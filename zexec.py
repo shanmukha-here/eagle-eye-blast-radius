@@ -97,6 +97,19 @@ class Zygote:
         number = {self.ids[n]: n for n in tests}
         return {number[t] for t in failed}, {number[t] for t in done}
 
+    def tpc(self, patch, queries, budget, wall):
+        """Digests of the given (name, index) TPC queries on the patched code, or None."""
+        if not self.start():
+            return None
+        try:
+            _send(self.process.stdin, ("tpc", patch, list(queries), [], float(budget), float(wall)))
+            reply = self._wait(wall + 60.0)
+        except (OSError, EOFError, ValueError):
+            self.close()
+            self.failed = True
+            return None
+        return reply
+
     def close(self):
         if self.process is not None:
             try:
@@ -209,6 +222,7 @@ def serve():
                 key = (code.co_filename[len(base) + 1:], code.co_qualname, code.co_firstlineno)
                 index.setdefault(key, []).append(obj)
     runner = zrun.Runner(found)
+    tpc_state = None
     gc.freeze()
     _send(stdout, "ready")
     while True:
@@ -216,6 +230,19 @@ def serve():
             job = _recv(stdin)
         except EOFError:
             break
+        kind = "tests"
+        if job[0] == "tpc":
+            kind, job = job[0], job[1:]
+            if tpc_state is None:
+                try:
+                    import ztpc_units
+                    tpc_state = ztpc_units.Tables()
+                    gc.freeze()
+                except Exception:
+                    tpc_state = False
+            if tpc_state is False:
+                _send(stdout, None)
+                continue
         patch, tests, limits, budget, wall = job
         r, w = os.pipe()
         pid = os.fork()
@@ -225,9 +252,19 @@ def serve():
             try:
                 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
                 _apply(base, patch, index)
-                runnable = [t for t in tests if t in found]
-                failed, done = runner.run(runnable, dict(zip(tests, limits)), stop_after=budget)
-                payload = marshal.dumps((sorted(failed), sorted(done)))
+                if kind == "tpc":
+                    import ztpc_units
+                    digests = []
+                    begin = time.process_time()
+                    for name, i in tests:
+                        if time.process_time() - begin > budget:
+                            break
+                        digests.append(ztpc_units.run_query(tpc_state, name, i))
+                    payload = marshal.dumps(digests)
+                else:
+                    runnable = [t for t in tests if t in found]
+                    failed, done = runner.run(runnable, dict(zip(tests, limits)), stop_after=budget)
+                    payload = marshal.dumps((sorted(failed), sorted(done)))
                 code = 0
             except BaseException:
                 if os.environ.get("ZEXEC_DEBUG"):

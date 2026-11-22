@@ -525,15 +525,19 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         if keep != selected:
             plan = scheduler.repack(keep, plan) if keep else []
             planned[i] = path, text, plan, nearby, passed, attempted, stats
-        swapped[i] = raw, mask
+        swapped[i] = raw, mask, found[2]
     executor = Execute(swap, scheduler, base, [t["id"] for t in tests], len(patches))
     order = sorted(swapped, key=lambda i: -scheduler.cost(planned[i][2]))
     try:
         for i in order:
-            raw, mask = swapped[i]
+            raw, mask, changed = swapped[i]
             path, text, plan, nearby, passed, attempted, stats = planned[i]
             begin = seconds()
+            executor.stats = {}
+            plan = executor.replay_long(raw, plan, mask, changed)
+            long_stats = executor.stats
             plan = executor.refine(raw, plan, mask)
+            executor.stats.update(long_stats)
             if report:
                 stats.update(executor.stats)
                 stats["cpu"] += seconds() - begin
