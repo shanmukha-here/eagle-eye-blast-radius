@@ -218,6 +218,30 @@ def _apply(base, patch, index):
     sys.meta_path.insert(0, _Source(serve))
 
 
+def _isolated(work):
+    """(result, CPU-s) of ``work()`` in a forked child; result None if it raised."""
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r)
+        try:
+            out = marshal.dumps(work())
+        except BaseException:
+            out = marshal.dumps(None)
+        with os.fdopen(w, "wb") as f:
+            f.write(out)
+        os._exit(0)
+    os.close(w)
+    with os.fdopen(r, "rb") as f:
+        data = f.read()
+    _, _, usage = os.wait4(pid, 0)
+    try:
+        result = marshal.loads(data)
+    except (EOFError, ValueError, TypeError):
+        result = None
+    return result, usage.ru_utime + usage.ru_stime
+
+
 def serve():
     import zrun
 
@@ -297,16 +321,22 @@ def serve():
                     import ztpc_units
                     digests = []
                     begin = time.process_time()
+                    used = 0.0
                     for k, (name, i) in enumerate(tests):
-                        if time.process_time() - begin > budget:
+                        if time.process_time() + used - begin > budget:
                             break
-                        if kind == "tpc":
-                            digests.append(ztpc_units.run_query(tpc_state, name, i))
-                        else:
-                            digests.append(ztpc_units.split_query(tpc_state, name, i, rows=False)[0])
+                        # Each query starts from the same state, as in the trace: queries
+                        # leave caches behind that change later plans.
+                        digest, cpu = _isolated(
+                            lambda: ztpc_units.run_query(tpc_state, name, i) if kind == "tpc"
+                            else ztpc_units.split_query(tpc_state, name, i, rows=False)[0])
+                        used += cpu
+                        if digest is None:
+                            break
+                        digests.append(digest)
                         if k < len(limits) and digests[-1] != limits[k]:
                             break
-                    payload = marshal.dumps((digests, time.process_time()))
+                    payload = marshal.dumps((digests, time.process_time() + used))
                 else:
                     runnable = [t for t in tests if t in found]
                     failed, done = runner.run(runnable, dict(zip(tests, limits)), stop_after=budget)
