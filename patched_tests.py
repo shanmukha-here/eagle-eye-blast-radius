@@ -130,6 +130,7 @@ class PatchedTests:
         self.available = len(os.listdir("/proc/self/task")) == 1
         self.precision = precision
         self.warm = WarmTests(self.base, profile.nodes.values())
+        self.fixture_warm = WarmTests(self.base, dependencies=("duckdb", "pandas"))
         self.stats = {}
 
     def warm_shapes(self, edits, candidates):
@@ -161,7 +162,7 @@ class PatchedTests:
             return None
         return changes
 
-    def estimate(self, candidates, warm=False):
+    def estimate(self, candidates):
         floor = 0.0
         for n in candidates:
             position = (self.scheduler.bits[n].bit_length() - 1) * MICROSECONDS.size
@@ -170,7 +171,7 @@ class PatchedTests:
                 measured, = MICROSECONDS.unpack_from(self.grouped, position)
             floor += measured * 1e-6 if measured else max(self.scheduler.durations[n], 2) * 0.00074
         fixtures = self.profile.fixture_cpu(candidates)
-        return (0.06 if warm else 0.15) + max(floor, fixtures)
+        return 0.15 + max(floor, fixtures)
 
     def cohort(self, selected, candidates, plan, available):
         groups = defaultdict(set)
@@ -243,17 +244,21 @@ class PatchedTests:
                 overlay_cpu = seconds() - begin
                 if cap - overlay_cpu < 0.15:
                     return plan
-                changes = self.warm_shapes(edits, candidates) if bare else None
-                if names in attempted and not changes:
+                fixture_only = bare and all(path.startswith("tests/fixtures/") for path in edits)
+                server = self.fixture_warm if fixture_only else self.warm
+                shapes = {} if fixture_only else self.warm_shapes(edits, candidates) if bare else None
+                use_warm = shapes is not None and (shapes or fixture_only) and not server.disabled
+                if names in attempted and not use_warm:
                     return plan
-                if changes and not self.warm.disabled:
-                    result, cost, startup = self.warm.run(root, names, changes, cap - overlay_cpu, self.deadline)
+                if use_warm:
+                    result, cost, startup = server.run(root, names, shapes, cap - overlay_cpu, self.deadline)
                     warm_cpu = cost + startup
                     self.stats.update(patched_preload=startup, patched_warm_cpu=cost)
                     if result is not None:
                         passed, imported, tests = result
                         certified = {self.profile.numbers[name] for name in passed} & candidates
-                        self.stats.update(patched_warm=True, patched_passed=len(certified),
+                        self.stats.update(patched_warm="fixture" if fixture_only else "body",
+                                          patched_passed=len(certified),
                                           patched_overlay=overlay_cpu, patched_import=imported, patched_tests=tests)
                         known_passes.update(certified)
                         return self.scheduler.repack(selected - certified, plan) if certified else plan
@@ -303,6 +308,7 @@ def lane(conn, engine):
         pass
     finally:
         engine.warm.close()
+        engine.fixture_warm.close()
         conn.close()
 
 

@@ -166,9 +166,10 @@ def duplex_context():
 
 
 class WarmTests:
-    def __init__(self, base, nodes):
+    def __init__(self, base, nodes=(), dependencies=()):
         self.base = base
-        self.modules = sorted({node.partition("::")[0][:-3].replace("/", ".") for node in nodes})
+        test_modules = sorted({node.partition("::")[0][:-3].replace("/", ".") for node in nodes})
+        self.modules = ("sqlglot", *dependencies, *test_modules)
         self.proc = self.conn = None
         self.disabled = False
 
