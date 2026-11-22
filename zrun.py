@@ -158,8 +158,9 @@ class Runner:
             self.times[self.current] = time.process_time() - self.started
         self.current = None
 
-    def run(self, ids, limits=None, stop_after=None):
-        """Return the set of ids that failed. ``stop_after`` is a CPU-second budget."""
+    def run(self, ids, limits=None, stop_after=None, first_failure=False):
+        """Return the set of ids that failed. ``stop_after`` is a CPU-second budget. With
+        ``first_failure``, stop after the first class group with a failure."""
         self.limits = limits or {}
         groups = {}
         order = []
@@ -200,6 +201,8 @@ class Runner:
                 failed.update(result.failed)
                 done.extend(members)
                 self.ids.clear()
+                if first_failure and failed:
+                    break
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, previous)

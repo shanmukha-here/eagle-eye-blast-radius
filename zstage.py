@@ -254,10 +254,13 @@ def swap_text(text):
 
 WALL0 = time.monotonic()
 LONG_MS = 3000
-# Stages that run tests in the zygote. Gates on hidden-like batches showed their CPU about
-# equal to the simulated time they save, so both are off.
+# Stages that run tests in the zygote. Full short-test refinement cost about as much CPU as
+# the simulated time it saved on hidden-like batches.
 REPLAY_LONG = True
-REFINE_SHORT = False
+REFINE_SHORT = True
+# Run short candidates only when all of a plan is short, stopping at the first failure: only
+# an empty plan saves enough (its workers' startup) to pay for the CPU.
+EMPTY_ONLY = True
 # Replay TPC queries up to row execution only, when no affected query runs changed code there.
 REPLAY_PLANS = True
 PLAN_CPU = 0.35
@@ -374,7 +377,7 @@ class Execute:
         selected = {n for group in plan for n in group}
         short = {n for n in selected if s.durations[n] < LONG_MS and mask >> n & 1
                  and not self.swap.blocked >> n & 1}
-        if not short:
+        if not short or (EMPTY_ONLY and short != selected):
             return plan
         after = s.repack(selected - short, plan) if selected - short else []
         upside = (s.cost(plan) - s.cost(after)) / 1000
@@ -384,11 +387,12 @@ class Execute:
                       "swap_exec_upside": round(upside, 3)}
         if estimate > 0.6 * upside or estimate > self.remaining:
             return plan
-        tests = sorted(short)
+        # Cheapest first: one failure keeps the plan, so find it early.
+        tests = sorted(short, key=lambda n: (self.cpu[n], n))
         limits = {n: 2.0 + 4.0 * self.cpu[n] for n in tests}
         wall = min(self.deadline - time.monotonic(), 2.0 + 4.0 * estimate)
-        begin = _cpu()
-        result = self.zygote.run(raw, tests, limits, 2.0 * estimate + 0.5, wall)
+        result = self.zygote.run(raw, tests, limits, 2.0 * estimate + 0.5, wall,
+                                 first_failure=EMPTY_ONLY)
         self.remaining -= max(self.zygote.last_cpu, estimate)
         self.stats["swap_exec_cpu"] = round(self.zygote.last_cpu, 3)
         if result is None:
@@ -397,7 +401,7 @@ class Execute:
         failed, done = result
         passed = done - failed
         self.stats.update(swap_exec_passed=len(passed), swap_exec_failing=len(failed))
-        if not passed:
+        if not passed or (EMPTY_ONLY and passed != selected):
             return plan
         keep = selected - passed
         return s.repack(keep, plan) if keep else []

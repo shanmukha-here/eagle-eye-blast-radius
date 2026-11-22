@@ -83,12 +83,13 @@ class Zygote:
             raise OSError("timeout")
         return _recv(self.process.stdout)
 
-    def run(self, patch, tests, limits, budget, wall):
+    def run(self, patch, tests, limits, budget, wall, first_failure=False):
         """Return (failed, done) test numbers, or None."""
         if not self.start():
             return None
         try:
-            _send(self.process.stdin, (patch, [self.ids[n] for n in tests],
+            _send(self.process.stdin, ("tests!" if first_failure else "tests", patch,
+                                       [self.ids[n] for n in tests],
                                        [float(limits[n]) for n in tests], float(budget), float(wall)))
             reply = self._wait(wall + 5.0)
         except (OSError, EOFError, ValueError):
@@ -286,9 +287,11 @@ def serve():
             job = _recv(stdin)
         except EOFError:
             break
-        kind = "tests"
-        if job[0] in ("tpc", "tpcplan"):
-            kind, job = job[0], job[1:]
+        kind, job = job[0], job[1:]
+        first_failure = kind == "tests!"
+        if first_failure:
+            kind = "tests"
+        if kind in ("tpc", "tpcplan"):
             if kind not in tpc_states:
                 try:
                     ensure([TPC_TEST])
@@ -342,7 +345,8 @@ def serve():
                     payload = marshal.dumps((digests, time.process_time() + used))
                 else:
                     runnable = [t for t in tests if t in found]
-                    failed, done = runner.run(runnable, dict(zip(tests, limits)), stop_after=budget)
+                    failed, done = runner.run(runnable, dict(zip(tests, limits)), stop_after=budget,
+                                              first_failure=first_failure)
                     payload = marshal.dumps((sorted(failed), sorted(done), time.process_time()))
                 code = 0
             except BaseException:
