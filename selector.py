@@ -505,6 +505,9 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         emit(path, plan, beginning, risk_text)
     # Exact code-swap candidates: drop tests that never start a changed code object.
     swap = Candidates(map_path.with_name("zmap.xz"), base, [t["id"] for t in tests])
+    executor = Execute(swap, scheduler, base, [t["id"] for t in tests], len(patches))
+    # TPC replay may still drop these after the value check, so they do not count against it.
+    replayable = set(executor.tpc_units) if executor.tpc is not None else set()
     swapped = {}
     for i, (path, text, plan, nearby, passed, attempted, stats) in enumerate(planned):
         if not plan or not swap.ready:
@@ -517,7 +520,7 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         selected = {n for group in plan for n in group}
 
         def gain(m, plan=plan, selected=selected):
-            rest = {n for n in selected if m >> n & 1}
+            rest = {n for n in selected if m >> n & 1 and n not in replayable}
             return (scheduler.cost(plan) - (scheduler.cost(scheduler.repack(rest, plan)) if rest else 0)) / 1000
 
         t_swap = seconds()
@@ -539,7 +542,6 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
         elif found[5] != found[0] and swap_text(raw):
             # Fixture or member edits: replay only tests they cannot reach, on the code part.
             swapped[i] = swap_text(raw), mask, found[2], found[4], found[5]
-    executor = Execute(swap, scheduler, base, [t["id"] for t in tests], len(patches))
     order = sorted(swapped, key=lambda i: -scheduler.cost(planned[i][2]))
     try:
         for i in order:
