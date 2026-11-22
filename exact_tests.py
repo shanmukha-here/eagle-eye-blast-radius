@@ -23,16 +23,21 @@ MICROSECONDS = Struct("<I")
 
 
 class UnitOutcomes(unittest.TestResult):
-    def __init__(self):
+    def __init__(self, continue_after_failure=False):
         super().__init__()
         self.passed = set()
+        self.continue_after_failure = continue_after_failure
+
+    def stop(self):
+        if not self.continue_after_failure:
+            super().stop()
 
     def addSuccess(self, test):
         self.passed.add(test.id())
         super().addSuccess(test)
 
 
-def run_unittests(ids, failfast=True):
+def run_unittests(ids, continue_after_failure=False):
     loader = unittest.TestLoader()
     test_names = {}
     tests = unittest.TestSuite()
@@ -44,8 +49,10 @@ def run_unittests(ids, failfast=True):
             return []
         test_names[name] = node
         tests.addTest(group)
-    result = UnitOutcomes()
-    result.failfast = failfast
+    result = UnitOutcomes(continue_after_failure)
+    # Stop a failing test on its first failed subtest. A broader replay can
+    # move to the next test while the original small verifier stays fail-fast.
+    result.failfast = True
     tests.run(result)
     # Fixture errors can be emitted after otherwise successful methods.
     if any(not isinstance(test, unittest.TestCase) for test, _ in (*result.errors, *result.skipped)):

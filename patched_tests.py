@@ -78,7 +78,7 @@ def execute(conn, root, names, cpu_cap, bare):
             return
         imported = time.process_time()
         if bare:
-            passed = run_unittests(names, failfast=False)
+            passed = run_unittests(names, continue_after_failure=True)
             conn.send((passed, imported - start, 0.0, time.process_time() - imported))
             return
 
@@ -130,7 +130,8 @@ class PatchedTests:
         changes = footprint(self.precision.impact, patch)
         if changes is None or not self.precision.short_certificate(patch):
             return None
-        if any(self.scheduler.bits[n] & self.precision.protected(changes) for n in candidates):
+        protected = self.precision.protected(changes)
+        if any(self.scheduler.bits[n] & protected for n in candidates):
             return None
         return {path: tuple(".".join(site[:-1]) for site, _, _ in rows)
                 for path, rows in changes.items()}
