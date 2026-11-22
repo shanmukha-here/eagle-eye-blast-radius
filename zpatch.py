@@ -297,7 +297,7 @@ def analyze(path, old_text, new_text, filename, values=False):
     old_code = compile(old_text, filename, "exec", dont_inherit=True)
     new_code = compile(new_text, filename, "exec", dont_inherit=True)
     function_docs = {name for kind, name, _ in docs if kind == "function"}
-    changed, swaps, scoped = [], [], []
+    changed, swaps, scoped, noswap = [], [], [], []
 
     def walk(old, new, chain):
         if old.co_qualname != new.co_qualname:
@@ -313,12 +313,24 @@ def analyze(path, old_text, new_text, filename, values=False):
             swaps.extend(here)
         elif is_function and skip_doc:
             swaps.append((key, new))
-        if is_function and len(old.co_freevars) != len(new.co_freevars):
-            raise Unsupported("closure")
         oc = [c for c in _children(old) if c.co_qualname not in gone]
         nc = [c for c in _children(new) if c.co_qualname not in new_only]
-        if len(oc) != len(nc):
-            raise Unsupported("children")
+        if len(old.co_freevars) != len(new.co_freevars) or len(oc) != len(nc):
+            if not is_function:
+                raise Unsupported("children")
+            # The function itself changed (_own covers free variables and nested code). Code it
+            # creates runs where the old nested code ran, so every old descendant counts as
+            # changed. Code objects with other closures or children cannot be swapped in place.
+            if key in scoped:
+                scoped.remove(key)
+            noswap.append(key)
+            stack = list(oc)
+            while stack:
+                c = stack.pop()
+                changed.append((path, c.co_qualname, c.co_firstlineno))
+                noswap.append(changed[-1])
+                stack.extend(_children(c))
+            return
         for o, n in zip(oc, nc):
             walk(o, n, here)
 
@@ -327,13 +339,14 @@ def analyze(path, old_text, new_text, filename, values=False):
     walk(old_code, new_code, [])
     unique = {}
     for key, code in swaps:
-        unique[key] = code
+        if key not in noswap:
+            unique[key] = code
     return {"changed": changed, "swaps": list(unique.items()), "docs": docs, "defaults": defaults,
             "scoped": scoped, "old_text": old_text,
             "added": [(scope, name, _passthrough(node)) for scope, name, node in added],
             "removed": [(scope, name, (path, (scope + "." if scope else "") + name, node.lineno))
                         for scope, name, node in removed],
-            "names": member_names, "values": edits}
+            "names": member_names, "values": edits, "noswap": noswap}
 
 
 def changed_lines(hunks):

@@ -298,6 +298,12 @@ class Candidates:
                 return None
             if result["added"] or result["removed"]:
                 member_files[path] = result["names"]
+            if result["noswap"]:
+                # The zygote cannot swap code whose closure or nested code changed shape; it
+                # replays only tests that never started that code.
+                executable = False
+                for key in result["noswap"]:
+                    unswapped |= self.masks.get(key, 0)
             results[path] = result
             texts[path] = new
         need_values = any(r["values"] for r in results.values())

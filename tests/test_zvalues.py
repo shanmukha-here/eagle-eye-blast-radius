@@ -58,6 +58,15 @@ class ValueEditTests(unittest.TestCase):
                 sys.meta_path.remove(finder)
                 sys.modules.pop("pkgz", None)
 
+    def test_closure_and_nested_code_changes_are_not_swapped(self):
+        old = "class A(B):\n    def f(self, x):\n        return super().f(x)\n    def g(self):\n        return [1]\n"
+        new = old.replace("return super().f(x)", "return None").replace("return [1]", "return (lambda: 1)()")
+        r = zpatch.analyze("sqlglot/x.py", old, new, "x.py")
+        keys = [("sqlglot/x.py", "A.f", 2), ("sqlglot/x.py", "A.g", 4)]
+        self.assertEqual(r["changed"], keys)
+        self.assertEqual(r["noswap"], keys)
+        self.assertEqual(r["swaps"], [])
+
     def test_qualnames_list_nested_functions(self):
         import zstage
         names = zstage._qualnames("class C:\n    def f(self, x=1):\n        def g():\n            pass\n", "x.py")
