@@ -640,10 +640,15 @@ FIXTURE_CONSUMERS = {
 ATTR_OPS = {"LOAD_ATTR", "STORE_ATTR", "DELETE_ATTR", "LOAD_SUPER_ATTR"}
 WALL0 = time.monotonic()
 LONG_MS = 3000
-# Stages that run tests in the zygote. Short-test refinement cost more CPU than the simulated
-# time it saved in Docker (hidden-01: 48.9 CPU-s for about 19 s).
+# Stages that run tests in the zygote. Short-test refinement of every plan cost more CPU than
+# the simulated time it saved in Docker (hidden-01: 48.9 CPU-s for about 19 s); it runs only
+# all-short plans (EMPTY_ONLY), priced by recorded test seconds.
 REPLAY_LONG = True
-REFINE_SHORT = False
+REFINE_SHORT = True
+# Zygote runs of short tests cost 1.2 to 1.7 times their recorded seconds natively, about half
+# that in Docker. The grouped profile misses work in pool workers (test_tpcds: 0.43 s grouped,
+# about 7 native CPU-s in the zygote), so limits use the larger of the two.
+REFINE_CPU = 0.9
 # Run short candidates only when all of a plan is short, stopping at the first failure: only
 # an empty plan saves enough (its workers' startup) to pay for the CPU.
 EMPTY_ONLY = True
@@ -919,15 +924,15 @@ class Execute:
             return plan
         after = s.repack(selected - short, plan) if selected - short else []
         upside = (s.cost(plan) - s.cost(after)) / 1000
-        # The grouped profile overstates in-process CPU about threefold.
-        estimate = 0.03 + 0.35 * sum(self.cpu[n] for n in short)
+        cost = {n: max(self.cpu[n], s.durations[n] / 1000) for n in short}
+        estimate = 0.05 + REFINE_CPU * sum(s.durations[n] for n in short) / 1000
         self.stats = {"swap_exec_candidates": len(short), "swap_exec_estimate": round(estimate, 3),
                       "swap_exec_upside": round(upside, 3)}
         if estimate > 0.6 * upside or estimate > self.remaining:
             return plan
         # Cheapest first: one failure keeps the plan, so find it early.
-        tests = sorted(short, key=lambda n: (self.cpu[n], n))
-        limits = {n: 2.0 + 4.0 * self.cpu[n] for n in tests}
+        tests = sorted(short, key=lambda n: (cost[n], n))
+        limits = {n: 2.0 + 4.0 * cost[n] for n in tests}
         wall = min(self.deadline - time.monotonic(), 2.0 + 4.0 * estimate)
         result = self.zygote.run(raw, tests, limits, 2.0 * estimate + 0.5, wall,
                                  first_failure=EMPTY_ONLY)
