@@ -316,6 +316,13 @@ def main(data=Path("/data"), base=Path("/base"), map_path=Path(__file__).with_na
                     precision.stats["ordinary_long_unobserved"] = len(active - retained)
                     plan = scheduler.repack(selected.difference(active - retained), plan)
         if text:
+            active_longs = {n for group in plan for n in group if n in long_cases.tests}
+            if active_longs and not (long_cases.stats.get("long_cases_run") or queries.stats.get("tpcds_queries")):
+                plan = long_cases.recovery_replay(
+                    text, plan, base, PatchWorkspace, active_longs, patched_tests.deadline,
+                    declaration=recovered is not None or bool(precision.stats.get("recovery_replaces")),
+                )
+                budget.execution_cpu += long_cases.stats.get("recovery_long_cpu", 0.0)
             checked = verify.certify_small(text, plan, precision.short_certificate)
             if checked != plan:
                 precision.stats["small_clean_cohort"] = sum(map(len, plan))

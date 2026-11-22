@@ -384,8 +384,9 @@ class LongCases:
         except (OSError, SyntaxError, UnicodeError, ValueError, UnknownChange, RecursionError):
             return active
 
-    def recovery_replay(self, text, workers, base, workspace_factory, active, deadline):
-        """Replay restored long tests with complete single-module evidence."""
+    def recovery_replay(self, text, workers, base, workspace_factory, active, deadline,
+                        declaration=True):
+        """Spend the final allowance on independent affected long-test inputs."""
         if not active or self.recovery_cpu < 0.3:
             return workers
         started = seconds()
@@ -406,7 +407,7 @@ class LongCases:
             after = syntax(path, patched(source, hunks))[0]
             if imports(before) != imports(after):
                 return workers
-            cases = self.changes(text, declaration=True)
+            cases = self.changes(text, declaration=declaration)
             if cases is None:
                 return workers
             # A zero mask in a whole-module declaration trace is insufficient
@@ -414,7 +415,7 @@ class LongCases:
             active = {test for test in active if cases[self.tests[test]]}
             if active:
                 with workspace_factory(base, text) as workspace:
-                    return self.apply(text, workers, workspace, allowance, declaration=True, only=active)
+                    return self.apply(text, workers, workspace, allowance, declaration=declaration, only=active)
         except (OSError, SyntaxError, UnicodeError, ValueError, UnknownChange, RecursionError):
             pass
         finally:
