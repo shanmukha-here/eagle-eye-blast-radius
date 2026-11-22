@@ -27,7 +27,7 @@ class Outcomes:
         self.phases = {}
         self.bad = set()
         self.bad_files = set()
-        self.collection_error = False
+        self.collection_errors = set()
         self.collected = 0.0
 
     def pytest_collection_modifyitems(self, config, items):
@@ -40,7 +40,8 @@ class Outcomes:
         self.collected = seconds()
 
     def pytest_collectreport(self, report):
-        self.collection_error |= report.failed
+        if report.failed:
+            self.collection_errors.add(report.nodeid.partition("::")[0].rstrip("/"))
 
     def pytest_runtest_logreport(self, report):
         node = report.nodeid
@@ -52,11 +53,18 @@ class Outcomes:
             self.phases.setdefault(node, set()).add(report.when)
 
     def passed(self):
-        if self.collection_error:
+        if "" in self.collection_errors:
             return []
-        return sorted(node for node, phases in self.phases.items()
-                      if node in self.names and phases == PHASES and node not in self.bad
-                      and node.partition("::")[0] not in self.bad_files)
+        passed = []
+        for node, phases in self.phases.items():
+            if node not in self.names or phases != PHASES or node in self.bad:
+                continue
+            path = node.partition("::")[0]
+            if path in self.bad_files or any(path == failed or path.startswith(failed + "/")
+                                             for failed in self.collection_errors):
+                continue
+            passed.append(node)
+        return sorted(passed)
 
 
 def execute(conn, root, names, cpu_cap, bare):

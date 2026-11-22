@@ -47,7 +47,9 @@ class PatchedTestEvidence(unittest.TestCase):
                     nodeid=node, when=phase, passed=(node, phase) != (b, "teardown")
                 ))
         self.assertEqual(outcomes.passed(), [c])
-        outcomes.pytest_collectreport(SimpleNamespace(failed=True))
+        outcomes.pytest_collectreport(SimpleNamespace(failed=True, nodeid="tests/broken.py"))
+        self.assertEqual(outcomes.passed(), [c])
+        outcomes.pytest_collectreport(SimpleNamespace(failed=True, nodeid=""))
         self.assertEqual(outcomes.passed(), [])
 
     def test_never_replace_a_function_that_ran_at_import(self):
