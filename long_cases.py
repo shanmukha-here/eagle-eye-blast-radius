@@ -223,21 +223,16 @@ class LongCases:
                 return None
             path, = edits
             return [self.index.mask(f"{m}:{path}") for m in range(len(METHODS))]
-        if len(changes) != 1:
-            # Independent sub-case traces do not capture all interactions
-            # between edits in separate modules and the suite's shared state.
-            return None
         return self.body_masks(changes)
 
     def body_masks(self, changes):
         masks = [0] * len(METHODS)
         for path, sites in changes.items():
-            for _, _, (body, anchors, control) in sites:
-                # An insertion can be reached on a different flank of an
-                # exception or control transfer than the recorded line.
-                if anchors:
-                    return None
-                for start, end in body | control:
+            for _, span, (body, anchors, control) in sites:
+                # For insertions use the entire original function. A case may
+                # reach the inserted code by a different control-flow edge.
+                windows = {span} if anchors else body | control
+                for start, end in windows:
                     for line in range(start, end + 1):
                         for method in range(len(METHODS)):
                             masks[method] |= self.index.mask(f"{method}:{path}:{line}")
@@ -397,15 +392,9 @@ class LongCases:
 
         try:
             edits = split_diff(text)
-            if len(edits) != 1:
+            if not edits or len(edits) > 4:
                 return workers
-            path, hunks = next(iter(edits.items()))
-            if not path.startswith("sqlglot/") or not path.endswith(".py") or path.endswith("/__init__.py"):
-                return workers
-            source = self.impact.base(path)[0]
-            before = syntax(path, source)[0]
-            after = syntax(path, patched(source, hunks))[0]
-            if imports(before) != imports(after):
+            if not all(self.verified_source(path, hunks) for path, hunks in edits.items()):
                 return workers
             cases = self.changes(text, declaration=declaration)
             if cases is None:
